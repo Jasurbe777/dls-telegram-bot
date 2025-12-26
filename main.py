@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS submissions (
 """)
 conn.commit()
 
+def already_sent(user_id: int) -> bool:
+    cur.execute(
+        "SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1",
+        (user_id,)
+    )
+    return cur.fetchone() is not None
 
 # ================== STATES ==================
 class Form(StatesGroup):
@@ -252,49 +258,44 @@ async def edit(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
+@dp.callback_query_handler(text="confirm", state=Form.confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
+    uid = cb.from_user.id
+
+    if already_sent(uid): 
+        await cb.message.answer("❌ Siz allaqachon yuborgansiz.")
+        await state.finish()
+        return
+
     data = await state.get_data()
-    user = cb.from_user
+    username = f"@{cb.from_user.username}" if cb.from_user.username else cb.from_user.full_name
 
     cur.execute(
-        "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
-        (user.id, data["username"], data["team"], data["photo_file_id"])
+        "INSERT INTO submissions VALUES (?,?,?,?)",
+        (uid, username, data["team"], data["photo"])
     )
     conn.commit()
 
-    counter = cfg.get("submission_counter", 1)
-    cfg["submission_counter"] = counter + 1
+    n = cfg.get("submission_counter", 1)
+    cfg["submission_counter"] = n + 1
     save_config()
 
-    admin_caption = (
-    f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
-    f"📌 Jamoa nomi : {data['team']}\n\n"
-    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-    f"👇👇👇\n"
-    f"https://t.me/dream_league_Uzb"
-)
+    caption = (
+        f"🏆 {n}_Ishtirokchimiz {username}\n"
+        f"📌 Jamoa nomi : {data['team']}\n\n"
+        "✅ BIZDAN UZOQLASHMANG ♻️\n"
+        "👇👇👇\n"
+        "https://t.me/dream_league_Uzb"
+    )
 
-   # Adminga yuborish
-    await bot.send_photo(
-    ADMIN_ID,
-    data["photo_file_id"], # type: ignore
-    caption=admin_caption # type: ignore
-)
+    await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
+    await bot.send_photo(uid, data["photo"], caption=caption)
 
-# Foydalanuvchining o‘ziga ham yuborish
-    await bot.send_photo(
-    cb.from_user.id, # type: ignore
-    data["photo_file_id"], # type: ignore
-    caption=admin_caption # type: ignore
-)
+    # 👇 MUHIM: shu joy FUNKSIYA ICHIDA
+    await cb.message.answer("✅ Ma’lumotlar yuborildi!")
 
-await cb.message.answer( # type: ignore
-    "✅ Maʼlumotlaringiz qabul qilindi va adminga yuborildi. Omad! 🍀"
-)
-
-await state.finish() # type: ignore
-await cb.answer() # type: ignore
+    await state.finish()
+    await cb.answer()
 
 
 # ================== ADMIN ==================
