@@ -1,4 +1,3 @@
-from opcode import hasjabs
 import logging, os, json, sqlite3, re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
@@ -50,7 +49,7 @@ CREATE TABLE IF NOT EXISTS ads(
 db.commit()
 
 # ================= HELPERS =================
-def is_admin(uid): 
+def is_admin(uid):
     return uid == ADMIN_ID
 
 def uname(user):
@@ -65,6 +64,10 @@ def contest_active():
         return False
     return datetime.utcnow() < datetime.fromisoformat(cfg["contest_end"])
 
+def has_ads():
+    cur.execute("SELECT COUNT(*) FROM ads")
+    return cur.fetchone()[0] > 0
+
 async def check_subs(user_id):
     cur.execute("SELECT channel FROM ads")
     rows = cur.fetchall()
@@ -73,23 +76,12 @@ async def check_subs(user_id):
     for (ch,) in rows:
         ch = ch.replace("https://t.me/", "").replace("@", "")
         try:
-            m = await bot.get_chat_member(f"@{ch}", user_id)
-            if m.status not in ("member", "administrator", "creator"):
+            member = await bot.get_chat_member(f"@{ch}", user_id)
+            if member.status not in ("member", "administrator", "creator"):
                 not_sub.append(f"@{ch}")
         except:
             not_sub.append(f"@{ch}")
     return not_sub
-
-def ads_text():
-    cur.execute("SELECT channel FROM ads")
-    rows = cur.fetchall()
-    if not rows:
-        return ""
-    return (
-        "\n\n✅ BIZDAN UZOQLASHMANG ♻️\n"
-        "👇👇👇\n" +
-        "\n".join([r[0] for r in rows])
-    )
 
 def admin_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -145,8 +137,7 @@ async def start(msg: types.Message, state: FSMContext):
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data == "start_user")
 async def start_user(cb: types.CallbackQuery):
-    # agar reklama kanallari bo‘lsa → obuna tekshiramiz
-    if hasjabs():
+    if has_ads():
         not_sub = await check_subs(cb.from_user.id)
 
         if not_sub:
@@ -174,11 +165,9 @@ async def start_user(cb: types.CallbackQuery):
             await cb.answer()
             return
 
-    # ✅ bu joyga faqat OBUNA BO‘LGANLAR keladi
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
     await cb.answer()
-
 
 @dp.callback_query_handler(lambda c: c.data == "check_subs")
 async def recheck_subs(cb: types.CallbackQuery):
@@ -208,13 +197,11 @@ async def recheck_subs(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # ✅ endi HAQIQIY obuna bo‘lgan
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
     await cb.answer()
 
-
-
+# ================= USER FORM =================
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
 async def get_photo(msg: types.Message, state: FSMContext):
     await state.update_data(photo=msg.photo[-1].file_id)
@@ -266,88 +253,17 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     save_cfg()
 
     caption = (
-    f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
-    f"📌 Jamoa nomi : {data['team']}\n\n"
-    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-    f"👇👇👇\n"
-    f"https://t.me/dream_league_Uzb"
-)
-
+        f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
+        f"📌 Jamoa nomi : {data['team']}\n\n"
+        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+        f"👇👇👇\n"
+        f"https://t.me/dream_league_Uzb"
+    )
 
     await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
     await bot.send_photo(user.id, data["photo"], caption=caption)
 
     await cb.message.answer("✅ Qabul qilindi")
-    await state.finish()
-
-# ================= ADMIN =================
-@dp.message_handler(lambda m: m.text == "📋 Ishtirokchilar ro‘yxati")
-async def list_users(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    cur.execute("SELECT username, team FROM submissions")
-    rows = cur.fetchall()
-    text = f"📊 Jami: {len(rows)} ta\n\n"
-    for i,(u,t) in enumerate(rows,1):
-        text += f"{i}. {u} — {t}\n"
-    await msg.answer(text)
-
-@dp.message_handler(lambda m: m.text == "🔢 Sozlash (raqam kiritish)")
-async def set_counter(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    await msg.answer("🔢 Yangi boshlang‘ich raqamni kiriting:")
-    await AdminForm.edit_counter.set()
-
-@dp.message_handler(state=AdminForm.edit_counter)
-async def save_counter(msg: types.Message, state: FSMContext):
-    if not msg.text.isdigit():
-        await msg.answer("❌ Faqat raqam")
-        return
-    cfg["submission_counter"] = int(msg.text)
-    save_cfg()
-    await msg.answer("✅ Qabul qilindi", reply_markup=admin_kb())
-    await state.finish()
-
-@dp.message_handler(lambda m: m.text == "⏳ Konkursni boshqarish")
-async def manage_contest(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    if contest_active():
-        await msg.answer(
-            f"📢 Konkurs davom etmoqda\n⏳ Tugash: {cfg['contest_end']}"
-        )
-    else:
-        await msg.answer("⏳ Necha muddat? (masalan: 3 kun, 5 soat)")
-        await AdminForm.contest_time.set()
-
-@dp.message_handler(state=AdminForm.contest_time)
-async def set_contest(msg: types.Message, state: FSMContext):
-    m = re.match(r"(\d+)\s*(kun|soat|oy)", msg.text.lower())
-    if not m:
-        await msg.answer("❌ Masalan: 3 kun")
-        return
-    n, t = int(m.group(1)), m.group(2)
-    delta = timedelta(days=n) if t=="kun" else timedelta(hours=n) if t=="soat" else timedelta(days=30*n)
-    cfg["contest_end"] = (datetime.utcnow()+delta).isoformat()
-    save_cfg()
-    await msg.answer("✅ Konkurs boshlandi", reply_markup=admin_kb())
-    await state.finish()
-
-@dp.message_handler(lambda m: m.text == "📢 Reklamalarni boshqarish")
-async def ads_manage(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    cur.execute("SELECT channel FROM ads")
-    rows = cur.fetchall()
-    text = "📢 Reklama kanallari:\n\n"
-    for r in rows:
-        text += f"• {r[0]}\n"
-    text += "\n➕ Yangi kanal linkini yuboring"
-    await msg.answer(text)
-    await AdminForm.add_ad.set()
-
-@dp.message_handler(state=AdminForm.add_ad)
-async def add_ad(msg: types.Message, state: FSMContext):
-    cur.execute("INSERT OR IGNORE INTO ads(channel) VALUES(?)", (msg.text.strip(),))
-    db.commit()
-    await msg.answer("✅ Tasdiqlandi", reply_markup=admin_kb())
     await state.finish()
 
 # ================= RUN =================
