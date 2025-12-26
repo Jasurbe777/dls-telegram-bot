@@ -55,18 +55,18 @@ def is_admin(user_id: int) -> bool:
 
 
 def has_submitted(user_id: int) -> bool:
-    cur.execute(
-        "SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1",
-        (user_id,)
-    )
+    cur.execute("SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1", (user_id,))
     return cur.fetchone() is not None
+
+
+def get_display_username(user: types.User) -> str:
+    return f"@{user.username}" if user.username else user.full_name
 
 
 # ================== STATES ==================
 
 class Form(StatesGroup):
     waiting_screenshot = State()
-    waiting_username = State()
     waiting_team = State()
     waiting_confirm = State()
 
@@ -77,54 +77,33 @@ class Form(StatesGroup):
 async def start(message: types.Message, state: FSMContext):
     await state.finish()
 
-    # ===== ADMIN PANEL =====
+    # ===== ADMIN =====
     if is_admin(message.from_user.id):
         kb = types.InlineKeyboardMarkup(row_width=1)
-
-        kb.add(types.InlineKeyboardButton(
-            "📋 Ishtirokchilar ro‘yxati",
-            callback_data="admin_list"
-        )) # type: ignore
+        kb.add(types.InlineKeyboardButton("📋 Ishtirokchilar ro‘yxati", callback_data="admin_list")) # type: ignore
 
         if cfg.get("contest_open", True):
-            kb.add(types.InlineKeyboardButton(
-                "🔴 Konkursni yopish",
-                callback_data="contest_close"
-            )) # type: ignore
+            kb.add(types.InlineKeyboardButton("🔴 Konkursni yopish", callback_data="contest_close")) # type: ignore
         else:
-            kb.add(types.InlineKeyboardButton(
-                "🟢 Konkursni ochish",
-                callback_data="contest_open"
-            )) # type: ignore
+            kb.add(types.InlineKeyboardButton("🟢 Konkursni ochish", callback_data="contest_open")) # type: ignore
 
-        await message.answer(
-            "👑 Admin panel\n\nKonkurs boshqaruvi:",
-            reply_markup=kb
-        )
+        await message.answer("👑 Admin panel", reply_markup=kb)
         return
 
-    # ===== KONKURS YOPIQ =====
+    # ===== CLOSED =====
     if not cfg.get("contest_open", True):
-        await message.answer(
-            "⛔ Konkurs hozircha yopiq.\n\n"
-            "📢 Natijalarni kuting!"
-        )
+        await message.answer("⛔ Konkurs hozircha yopiq.")
         return
 
-    # ===== USER ALREADY SUBMITTED =====
     if has_submitted(message.from_user.id):
-        await message.answer(
-            "❌ Siz allaqachon konkursda qatnashgansiz.\n\n"
-            "📌 Ma’lumotlar faqat 1 marta yuboriladi."
-        )
+        await message.answer("❌ Siz allaqachon qatnashgansiz.")
         return
 
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
 
     await message.answer(
-        "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-        "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️",
+        "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅",
         reply_markup=kb
     )
 
@@ -133,18 +112,6 @@ async def start(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == "start_flow")
 async def start_flow(cb: types.CallbackQuery):
-    if not cfg.get("contest_open", True):
-        await cb.message.answer("⛔ Konkurs hozircha yopiq.")
-        await cb.answer()
-        return
-
-    if has_submitted(cb.from_user.id):
-        await cb.message.answer(
-            "❌ Siz allaqachon ma’lumot yuborgansiz."
-        )
-        await cb.answer()
-        return
-
     await cb.message.answer("📸 Iltimos, skrinshotni yuboring:")
     await Form.waiting_screenshot.set()
     await cb.answer()
@@ -155,15 +122,6 @@ async def start_flow(cb: types.CallbackQuery):
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.waiting_screenshot)
 async def get_screenshot(message: types.Message, state: FSMContext):
     await state.update_data(photo_file_id=message.photo[-1].file_id)
-    await message.answer("👤 Telegram username’ingizni yuboring (masalan: @username)")
-    await Form.waiting_username.set()
-
-
-# ================== USERNAME ==================
-
-@dp.message_handler(state=Form.waiting_username)
-async def get_username(message: types.Message, state: FSMContext):
-    await state.update_data(username=message.text)
     await message.answer("🏷 Jamoa nomini kiriting:")
     await Form.waiting_team.set()
 
@@ -174,14 +132,36 @@ async def get_username(message: types.Message, state: FSMContext):
 async def get_team(message: types.Message, state: FSMContext):
     await state.update_data(team=message.text)
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("Tasdiqlash", callback_data="confirm")) # type: ignore
+    data = await state.get_data()
+    username = get_display_username(message.from_user)
 
-    await message.answer(
-        "✅ Ma’lumotlar tayyor. Tasdiqlash uchun tugmani bosing.",
+    caption = (
+        f"👤 Ishtirokchi: {username}\n"
+        f"🏷 Jamoa nomi: {data['team']}\n\n"
+        f"Ma’lumotlarni tasdiqlaysizmi?"
+    )
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"), # type: ignore
+        types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit") # type: ignore
+    )
+
+    await message.answer_photo(
+        data["photo_file_id"],
+        caption=caption,
         reply_markup=kb
     )
     await Form.waiting_confirm.set()
+
+
+# ================== EDIT ==================
+
+@dp.callback_query_handler(lambda c: c.data == "edit", state=Form.waiting_confirm)
+async def edit(cb: types.CallbackQuery, state: FSMContext):
+    await cb.message.answer("✏️ Yangi jamoa nomini kiriting:")
+    await Form.waiting_team.set()
+    await cb.answer()
 
 
 # ================== CONFIRM ==================
@@ -193,14 +173,14 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     if has_submitted(user.id):
         await cb.message.answer("❌ Qayta yuborish mumkin emas.")
         await state.finish()
-        await cb.answer()
         return
 
     data = await state.get_data()
+    username = get_display_username(user)
 
     cur.execute(
         "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
-        (user.id, data["username"], data["team"], data["photo_file_id"])
+        (user.id, username, data["team"], data["photo_file_id"])
     )
     conn.commit()
 
@@ -209,17 +189,15 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     save_config()
 
     caption = (
-        f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+        f"🏆 {counter}_Ishtirokchimiz {username}\n"
         f"📌 Jamoa nomi : {data['team']}\n\n"
-        f"👇 https://t.me/dream_league_Uzb"
+        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+        f"👇👇👇\n"
+        f"https://t.me/dream_league_Uzb"
     )
 
-    try:
-        await bot.send_photo(ADMIN_ID, data["photo_file_id"], caption=caption)
-    except Exception as e:
-        logging.error(f"Admin send error: {e}")
-
-    await cb.message.answer("✅ Ma’lumotlar adminga yuborildi.")
+    await bot.send_photo(ADMIN_ID, data["photo_file_id"], caption=caption)
+    await cb.message.answer("✅ Ma’lumotlar qabul qilindi.")
     await bot.send_photo(user.id, data["photo_file_id"], caption=caption)
 
     await state.finish()
@@ -233,18 +211,12 @@ async def admin_list(cb: types.CallbackQuery):
     if not is_admin(cb.from_user.id):
         return
 
-    cur.execute("SELECT username, team FROM submissions ORDER BY id ASC")
+    cur.execute("SELECT username, team FROM submissions")
     rows = cur.fetchall()
 
-    total = len(rows)
-    if total == 0:
-        await cb.message.answer("📭 Ishtirokchilar yo‘q.")
-        await cb.answer()
-        return
-
-    text = f"📊 Jami ishtirokchilar: {total}\n\n"
-    for i, (username, team) in enumerate(rows, start=1):
-        text += f"{i}. {username} — {team}\n"
+    text = f"📊 Jami ishtirokchilar: {len(rows)}\n\n"
+    for i, (u, t) in enumerate(rows, 1):
+        text += f"{i}. {u} — {t}\n"
 
     await cb.message.answer(text)
     await cb.answer()
@@ -254,45 +226,18 @@ async def admin_list(cb: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "contest_close")
 async def contest_close(cb: types.CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return
-
     cfg["contest_open"] = False
     save_config()
-
     await cb.message.answer("⛔ Konkurs yopildi.")
     await cb.answer()
 
 
 @dp.callback_query_handler(lambda c: c.data == "contest_open")
 async def contest_open(cb: types.CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return
-
     cfg["contest_open"] = True
     save_config()
-
     await cb.message.answer("🟢 Konkurs ochildi.")
     await cb.answer()
-
-
-# ================== ADMIN RESET ==================
-
-@dp.message_handler(commands=["reset"])
-async def admin_reset(message: types.Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    args = message.get_args()
-    if not args.isdigit(): # type: ignore
-        await message.answer("❗ Foydalanish: /reset USER_ID")
-        return
-
-    user_id = int(args) # type: ignore
-    cur.execute("DELETE FROM submissions WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-    await message.answer(f"✅ User {user_id} qayta ruxsat oldi.")
 
 
 # ================== RUN ==================
