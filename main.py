@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("BOT TOKEN topilmadi")
+    raise RuntimeError("BOT TOKEN yo‘q")
 
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -32,7 +32,6 @@ cur = db.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS submissions(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER UNIQUE,
     username TEXT,
     team TEXT,
@@ -42,7 +41,6 @@ CREATE TABLE IF NOT EXISTS submissions(
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS ads(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT UNIQUE
 )
 """)
@@ -98,8 +96,8 @@ class UserForm(StatesGroup):
     confirm = State()
 
 class AdminForm(StatesGroup):
-    contest_time = State()
-    edit_counter = State()
+    contest_days = State()
+    counter = State()
     add_ad = State()
 
 # ================= START =================
@@ -119,10 +117,7 @@ async def start(msg: types.Message, state: FSMContext):
         return
 
     if has_submitted(msg.from_user.id):
-        await msg.answer(
-            "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-            "❌ Siz allaqachon qatnashgansiz."
-        )
+        await msg.answer("❌ Siz allaqachon qatnashgansiz.")
         return
 
     kb = types.InlineKeyboardMarkup().add(
@@ -139,67 +134,28 @@ async def start(msg: types.Message, state: FSMContext):
 async def start_user(cb: types.CallbackQuery):
     if has_ads():
         not_sub = await check_subs(cb.from_user.id)
-
         if not_sub:
             kb = types.InlineKeyboardMarkup(row_width=1)
-
             for ch in not_sub:
-                kb.add(
-                    types.InlineKeyboardButton(
-                        "Obuna bo‘lish",
-                        url=f"https://t.me/{ch.replace('@','')}"
-                    )
-                )
-
-            kb.add(
-                types.InlineKeyboardButton(
-                    "Men obuna bo‘ldim (tekshirilsin)",
-                    callback_data="check_subs"
-                )
-            )
-
+                kb.add(types.InlineKeyboardButton("Obuna bo‘lish", url=f"https://t.me/{ch[1:]}"))
+            kb.add(types.InlineKeyboardButton("Men obuna bo‘ldim", callback_data="check_subs"))
             await cb.message.answer(
-                "Iltimos, quyidagi kanallarga obuna bo‘ling va so‘ng tekshirish tugmasini bosing:",
+                "Iltimos, quyidagi kanallarga obuna bo‘ling:",
                 reply_markup=kb
             )
-            await cb.answer()
             return
 
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
-    await cb.answer()
 
 @dp.callback_query_handler(lambda c: c.data == "check_subs")
-async def recheck_subs(cb: types.CallbackQuery):
+async def recheck(cb: types.CallbackQuery):
     not_sub = await check_subs(cb.from_user.id)
-
     if not_sub:
-        text = "❌ Siz hali quyidagi kanal(lar)ga obuna bo‘lmadingiz:\n\n"
-        text += "\n".join(not_sub)
-
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        for ch in not_sub:
-            kb.add(
-                types.InlineKeyboardButton(
-                    "Obuna bo‘lish",
-                    url=f"https://t.me/{ch.replace('@','')}"
-                )
-            )
-
-        kb.add(
-            types.InlineKeyboardButton(
-                "Men obuna bo‘ldim (tekshirilsin)",
-                callback_data="check_subs"
-            )
-        )
-
-        await cb.message.answer(text, reply_markup=kb)
-        await cb.answer()
+        await cb.message.answer("❌ Siz hali obuna bo‘lmadingiz:\n" + "\n".join(not_sub))
         return
-
-    await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
+    await cb.message.answer("📸 Profil rasmini yuboring:")
     await UserForm.photo.set()
-    await cb.answer()
 
 # ================= USER FORM =================
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
@@ -213,19 +169,16 @@ async def get_team(msg: types.Message, state: FSMContext):
     await state.update_data(team=msg.text)
     data = await state.get_data()
 
-    cap = (
-        f"👤 {uname(msg.from_user)}\n"
-        f"🏷 Jamoa nomi : {data['team']}\n\n"
-        f"Tasdiqlaysizmi?"
-    )
-
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
+    kb = types.InlineKeyboardMarkup().add(
         types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"),
         types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit")
     )
 
-    await msg.answer_photo(data["photo"], caption=cap, reply_markup=kb)
+    await msg.answer_photo(
+        data["photo"],
+        caption=f"👤 {uname(msg.from_user)}\n🏷 Jamoa: {data['team']}",
+        reply_markup=kb
+    )
     await UserForm.confirm.set()
 
 @dp.callback_query_handler(lambda c: c.data == "edit", state=UserForm.confirm)
@@ -243,7 +196,7 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     cur.execute(
-        "INSERT INTO submissions(user_id,username,team,photo) VALUES(?,?,?,?)",
+        "INSERT INTO submissions VALUES(?,?,?,?)",
         (user.id, uname(user), data["team"], data["photo"])
     )
     db.commit()
@@ -256,14 +209,76 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
         f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
         f"📌 Jamoa nomi : {data['team']}\n\n"
         f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-        f"👇👇👇\n"
         f"https://t.me/dream_league_Uzb"
     )
 
     await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
     await bot.send_photo(user.id, data["photo"], caption=caption)
+    await state.finish()
 
-    await cb.message.answer("✅ Qabul qilindi")
+# ================= ADMIN =================
+@dp.message_handler(text="📋 Ishtirokchilar ro‘yxati")
+async def admin_list(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    cur.execute("SELECT username, team FROM submissions")
+    rows = cur.fetchall()
+    text = f"📋 Jami: {len(rows)}\n\n"
+    for i, (u, t) in enumerate(rows, 1):
+        text += f"{i}. {u} — {t}\n"
+    await msg.answer(text)
+
+@dp.message_handler(text="⏳ Konkursni boshqarish")
+async def admin_contest(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    await msg.answer("Necha KUN davom etadi?")
+    await AdminForm.contest_days.set()
+
+@dp.message_handler(state=AdminForm.contest_days)
+async def set_contest(msg: types.Message, state: FSMContext):
+    if not msg.text.isdigit():
+        await msg.answer("Faqat raqam")
+        return
+    cfg["contest_end"] = (datetime.utcnow() + timedelta(days=int(msg.text))).isoformat()
+    save_cfg()
+    await msg.answer("✅ Konkurs boshlandi")
+    await state.finish()
+
+@dp.message_handler(text="🔢 Sozlash (raqam kiritish)")
+async def set_counter(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    await msg.answer("Boshlang‘ich raqam:")
+    await AdminForm.counter.set()
+
+@dp.message_handler(state=AdminForm.counter)
+async def save_counter(msg: types.Message, state: FSMContext):
+    cfg["submission_counter"] = int(msg.text)
+    save_cfg()
+    await msg.answer("✅ Saqlandi")
+    await state.finish()
+
+@dp.message_handler(text="📢 Reklamalarni boshqarish")
+async def ads(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    cur.execute("SELECT channel FROM ads")
+    rows = cur.fetchall()
+    text = "📢 Kanallar:\n"
+    for r in rows:
+        text += f"- {r[0]}\n"
+    kb = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("➕ Qo‘shish", callback_data="add_ad")
+    )
+    await msg.answer(text, reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data == "add_ad")
+async def add_ad(cb: types.CallbackQuery):
+    await cb.message.answer("Kanal linkini yuboring:")
+    await AdminForm.add_ad.set()
+
+@dp.message_handler(state=AdminForm.add_ad)
+async def save_ad(msg: types.Message, state: FSMContext):
+    cur.execute("INSERT OR IGNORE INTO ads VALUES(?)", (msg.text.strip(),))
+    db.commit()
+    await msg.answer("✅ Qo‘shildi")
     await state.finish()
 
 # ================= RUN =================
