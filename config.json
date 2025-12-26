@@ -1,7 +1,13 @@
+
+
 {
   "bot_token": "",
   "admin_id": 2025091779,
   "owner_name": "Ismoilov",
   "owner_about": "Ismoilov halol.",
-  "submission_counter": 1
+  "submission_counter": 1,
+  "contest_open": true,
+  "promo_channels": [
+    "https://t.me/DLS_YOUTUBE"
+  ]
 }
