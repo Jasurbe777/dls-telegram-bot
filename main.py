@@ -15,7 +15,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or cfg.get("bot_token")
+BBOT_TOKEN = cfg.get("bot_token")
 ADMIN_ID = int(cfg.get("admin_id"))
 
 YOUTUBE_LINK = cfg.get("youtube_link")
@@ -23,12 +23,12 @@ INSTAGRAM_LINK = cfg.get("instagram_link")
 
 logging.basicConfig(level=logging.INFO)
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT TOKEN topilmadi!")
+if not BBOT_TOKEN:
+    raise RuntimeError("BOT TOKEN yo‘q (config.json)")
 
 
 # ================== BOT ==================
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BBOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 
