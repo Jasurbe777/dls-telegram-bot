@@ -1,3 +1,4 @@
+from opcode import hasjabs
 import logging, os, json, sqlite3, re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
@@ -144,11 +145,50 @@ async def start(msg: types.Message, state: FSMContext):
 # ================= USER FLOW =================
 @dp.callback_query_handler(lambda c: c.data == "start_user")
 async def start_user(cb: types.CallbackQuery):
+    # agar reklama kanallari bo‘lsa → obuna tekshiramiz
+    if hasjabs():
+        not_sub = await check_subs(cb.from_user.id)
+
+        if not_sub:
+            kb = types.InlineKeyboardMarkup(row_width=1)
+
+            for ch in not_sub:
+                kb.add(
+                    types.InlineKeyboardButton(
+                        "Obuna bo‘lish",
+                        url=f"https://t.me/{ch.replace('@','')}"
+                    )
+                )
+
+            kb.add(
+                types.InlineKeyboardButton(
+                    "Men obuna bo‘ldim (tekshirilsin)",
+                    callback_data="check_subs"
+                )
+            )
+
+            await cb.message.answer(
+                "Iltimos, quyidagi kanallarga obuna bo‘ling va so‘ng tekshirish tugmasini bosing:",
+                reply_markup=kb
+            )
+            await cb.answer()
+            return
+
+    # ✅ bu joyga faqat OBUNA BO‘LGANLAR keladi
+    await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
+    await UserForm.photo.set()
+    await cb.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "check_subs")
+async def recheck_subs(cb: types.CallbackQuery):
     not_sub = await check_subs(cb.from_user.id)
 
     if not_sub:
-        kb = types.InlineKeyboardMarkup(row_width=1)
+        text = "❌ Siz hali quyidagi kanal(lar)ga obuna bo‘lmadingiz:\n\n"
+        text += "\n".join(not_sub)
 
+        kb = types.InlineKeyboardMarkup(row_width=1)
         for ch in not_sub:
             kb.add(
                 types.InlineKeyboardButton(
@@ -160,37 +200,19 @@ async def start_user(cb: types.CallbackQuery):
         kb.add(
             types.InlineKeyboardButton(
                 "Men obuna bo‘ldim (tekshirilsin)",
-                callback_data="start_user"
+                callback_data="check_subs"
             )
         )
 
-        await cb.message.answer(
-            "Iltimos, quyidagi kanallarga a’zo bo‘ling va so‘ng tekshirish tugmasini bosing:",
-            reply_markup=kb
-        )
+        await cb.message.answer(text, reply_markup=kb)
         await cb.answer()
         return
 
-    # ✅ agar hammasiga obuna bo‘lsa
+    # ✅ endi HAQIQIY obuna bo‘lgan
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
     await cb.answer()
 
-async def check_subs(user_id):
-    cur.execute("SELECT channel FROM ads")
-    rows = cur.fetchall()
-    not_sub = []
-
-    for (ch,) in rows:
-        ch = ch.replace("https://t.me/", "").replace("@", "")
-        try:
-            m = await bot.get_chat_member(f"@{ch}", user_id)
-            if m.status not in ("member", "administrator", "creator"):
-                not_sub.append(f"@{ch}")
-        except:
-            not_sub.append(f"@{ch}")
-
-    return not_sub
 
 
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
