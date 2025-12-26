@@ -32,28 +32,27 @@ cur = db.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS submissions(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-user_id INTEGER UNIQUE,
-username TEXT,
-team TEXT,
-photo TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER UNIQUE,
+    username TEXT,
+    team TEXT,
+    photo TEXT
 )
 """)
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS ads(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-channel TEXT,
-expires TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT UNIQUE
 )
 """)
-
 db.commit()
 
 # ================= HELPERS =================
-def is_admin(uid): return uid == ADMIN_ID
+def is_admin(uid): 
+    return uid == ADMIN_ID
 
-def username(user):
+def uname(user):
     return f"@{user.username}" if user.username else user.full_name
 
 def has_submitted(uid):
@@ -65,23 +64,38 @@ def contest_active():
         return False
     return datetime.utcnow() < datetime.fromisoformat(cfg["contest_end"])
 
-def clean_ads():
-    now = datetime.utcnow().isoformat()
-    cur.execute("DELETE FROM ads WHERE expires<=?", (now,))
-    db.commit()
-
-def ads_text():
-    clean_ads()
+async def check_subs(user_id):
     cur.execute("SELECT channel FROM ads")
     rows = cur.fetchall()
-    if not rows: return ""
-    return "\n\n" + "\n".join([f"👉 {r[0]}" for r in rows])
+    not_sub = []
+
+    for (ch,) in rows:
+        ch = ch.replace("https://t.me/", "").replace("@", "")
+        try:
+            m = await bot.get_chat_member(f"@{ch}", user_id)
+            if m.status not in ("member", "administrator", "creator"):
+                not_sub.append(f"@{ch}")
+        except:
+            not_sub.append(f"@{ch}")
+    return not_sub
+
+def ads_text():
+    cur.execute("SELECT channel FROM ads")
+    rows = cur.fetchall()
+    if not rows:
+        return ""
+    return (
+        "\n\n✅ BIZDAN UZOQLASHMANG ♻️\n"
+        "👇👇👇\n" +
+        "\n".join([r[0] for r in rows])
+    )
 
 def admin_kb():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📋 Ishtirokchilar ro‘yxati")
     kb.add("⏳ Konkursni boshqarish")
     kb.add("🔢 Sozlash (raqam kiritish)")
+    kb.add("📢 Reklamalarni boshqarish")
     return kb
 
 # ================= STATES =================
@@ -93,81 +107,86 @@ class UserForm(StatesGroup):
 class AdminForm(StatesGroup):
     contest_time = State()
     edit_counter = State()
+    add_ad = State()
 
 # ================= START =================
 @dp.message_handler(commands="start", state="*")
 async def start(msg: types.Message, state: FSMContext):
     await state.finish()
 
-    # ===== ADMIN =====
     if is_admin(msg.from_user.id):
-        await msg.answer(
-            "👑 Admin panel",
-            reply_markup=admin_kb()
-        )
+        await msg.answer("👑 Admin panel", reply_markup=admin_kb())
         return
 
-    # ===== KONKURS YOPIQ =====
     if not contest_active():
         await msg.answer(
             "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-            "⛔ Hozircha konkurs yopiq.\n"
-            "📢 Natijalarni kuting!"
+            "⛔ Hozircha konkurs yopiq."
         )
         return
 
-    # ===== OLDIN QATNASHGAN =====
     if has_submitted(msg.from_user.id):
         await msg.answer(
             "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-            "❌ Siz allaqachon konkursda qatnashgansiz."
+            "❌ Siz allaqachon qatnashgansiz."
         )
         return
 
-    # ===== YANGI FOYDALANUVCHI =====
     kb = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("Boshlash", callback_data="start") # type: ignore
+        types.InlineKeyboardButton("Boshlash", callback_data="start_user")
     )
-
     await msg.answer(
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
         "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️",
         reply_markup=kb
     )
 
-
 # ================= USER FLOW =================
-@dp.callback_query_handler(lambda c: c.data == "start")
+@dp.callback_query_handler(lambda c: c.data == "start_user")
 async def start_user(cb: types.CallbackQuery):
+    not_sub = await check_subs(cb.from_user.id)
+    if not_sub:
+        text = "❌ Iltimos, quyidagi kanallarga obuna bo‘ling:\n\n"
+        text += "\n".join(not_sub)
+        kb = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("🔄 Tekshirish", callback_data="start_user")
+        )
+        await cb.message.answer(text, reply_markup=kb)
+        return
+
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
-    await cb.answer()
 
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
-async def user_photo(msg: types.Message, state: FSMContext):
+async def get_photo(msg: types.Message, state: FSMContext):
     await state.update_data(photo=msg.photo[-1].file_id)
     await msg.answer("🏷 Jamoa nomini kiriting:")
     await UserForm.team.set()
 
 @dp.message_handler(state=UserForm.team)
-async def user_team(msg: types.Message, state: FSMContext):
+async def get_team(msg: types.Message, state: FSMContext):
     await state.update_data(team=msg.text)
     data = await state.get_data()
 
-    cap = f"👤 {username(msg.from_user)}\n🏷 {data['team']}\n\nTasdiqlaysizmi?"
-    kb = types.InlineKeyboardMarkup(row_width=2).add(
-        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"), # type: ignore
-        types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit") # type: ignore
+    cap = (
+        f"👤 {uname(msg.from_user)}\n"
+        f"🏷 Jamoa nomi : {data['team']}\n\n"
+        f"Tasdiqlaysizmi?"
+    )
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"),
+        types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit")
     )
 
     await msg.answer_photo(data["photo"], caption=cap, reply_markup=kb)
     await UserForm.confirm.set()
 
 @dp.callback_query_handler(lambda c: c.data == "edit", state=UserForm.confirm)
-async def edit_team(cb: types.CallbackQuery):
+async def edit(cb: types.CallbackQuery):
     await cb.message.answer("✏️ Yangi jamoa nomini kiriting:")
     await UserForm.team.set()
-    await cb.answer()
 
 @dp.callback_query_handler(lambda c: c.data == "confirm", state=UserForm.confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
@@ -180,7 +199,7 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     cur.execute(
         "INSERT INTO submissions(user_id,username,team,photo) VALUES(?,?,?,?)",
-        (user.id, username(user), data["team"], data["photo"])
+        (user.id, uname(user), data["team"], data["photo"])
     )
     db.commit()
 
@@ -189,7 +208,7 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     save_cfg()
 
     caption = (
-        f"🏆 {num}_Ishtirokchimiz {username(user)}\n"
+        f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
         f"📌 Jamoa nomi : {data['team']}"
         + ads_text()
     )
@@ -199,20 +218,16 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
 
     await cb.message.answer("✅ Qabul qilindi")
     await state.finish()
-    await cb.answer()
 
 # ================= ADMIN =================
 @dp.message_handler(lambda m: m.text == "📋 Ishtirokchilar ro‘yxati")
 async def list_users(msg: types.Message):
     if not is_admin(msg.from_user.id): return
-
-    cur.execute("SELECT username,team FROM submissions")
+    cur.execute("SELECT username, team FROM submissions")
     rows = cur.fetchall()
-
-    text = f"📊 Jami: {len(rows)}\n\n"
+    text = f"📊 Jami: {len(rows)} ta\n\n"
     for i,(u,t) in enumerate(rows,1):
         text += f"{i}. {u} — {t}\n"
-
     await msg.answer(text)
 
 @dp.message_handler(lambda m: m.text == "🔢 Sozlash (raqam kiritish)")
@@ -224,7 +239,7 @@ async def set_counter(msg: types.Message):
 @dp.message_handler(state=AdminForm.edit_counter)
 async def save_counter(msg: types.Message, state: FSMContext):
     if not msg.text.isdigit():
-        await msg.answer("❌ Faqat raqam kiriting")
+        await msg.answer("❌ Faqat raqam")
         return
     cfg["submission_counter"] = int(msg.text)
     save_cfg()
@@ -232,48 +247,47 @@ async def save_counter(msg: types.Message, state: FSMContext):
     await state.finish()
 
 @dp.message_handler(lambda m: m.text == "⏳ Konkursni boshqarish")
-async def contest_manage(msg: types.Message):
+async def manage_contest(msg: types.Message):
     if not is_admin(msg.from_user.id): return
-
     if contest_active():
-        end = cfg["contest_end"]
-        kb = types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit_contest"), # type: ignore
-            types.InlineKeyboardButton("❌ Yopish", callback_data="close_contest") # type: ignore
+        await msg.answer(
+            f"📢 Konkurs davom etmoqda\n⏳ Tugash: {cfg['contest_end']}"
         )
-        await msg.answer(f"📢 Konkurs davom etmoqda\n⏳ Tugash: {end}", reply_markup=kb)
     else:
-        await msg.answer("⏳ Necha muddat? (masalan: 3 kun, 5 soat, 1 oy)")
+        await msg.answer("⏳ Necha muddat? (masalan: 3 kun, 5 soat)")
         await AdminForm.contest_time.set()
 
 @dp.message_handler(state=AdminForm.contest_time)
 async def set_contest(msg: types.Message, state: FSMContext):
     m = re.match(r"(\d+)\s*(kun|soat|oy)", msg.text.lower())
     if not m:
-        await msg.answer("❌ Masalan: 3 kun, 5 soat")
+        await msg.answer("❌ Masalan: 3 kun")
         return
-
     n, t = int(m.group(1)), m.group(2)
     delta = timedelta(days=n) if t=="kun" else timedelta(hours=n) if t=="soat" else timedelta(days=30*n)
-
     cfg["contest_end"] = (datetime.utcnow()+delta).isoformat()
     save_cfg()
-
     await msg.answer("✅ Konkurs boshlandi", reply_markup=admin_kb())
     await state.finish()
 
-@dp.callback_query_handler(lambda c: c.data == "close_contest")
-async def close_contest(cb: types.CallbackQuery):
-    cfg["contest_end"] = None
-    save_cfg()
-    await cb.message.answer("⛔ Konkurs yopildi", reply_markup=admin_kb())
-    await cb.answer()
+@dp.message_handler(lambda m: m.text == "📢 Reklamalarni boshqarish")
+async def ads_manage(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    cur.execute("SELECT channel FROM ads")
+    rows = cur.fetchall()
+    text = "📢 Reklama kanallari:\n\n"
+    for r in rows:
+        text += f"• {r[0]}\n"
+    text += "\n➕ Yangi kanal linkini yuboring"
+    await msg.answer(text)
+    await AdminForm.add_ad.set()
 
-@dp.callback_query_handler(lambda c: c.data == "edit_contest")
-async def edit_contest(cb: types.CallbackQuery):
-    await cb.message.answer("⏳ Yangi muddatni kiriting:")
-    await AdminForm.contest_time.set()
-    await cb.answer()
+@dp.message_handler(state=AdminForm.add_ad)
+async def add_ad(msg: types.Message, state: FSMContext):
+    cur.execute("INSERT OR IGNORE INTO ads(channel) VALUES(?)", (msg.text.strip(),))
+    db.commit()
+    await msg.answer("✅ Tasdiqlandi", reply_markup=admin_kb())
+    await state.finish()
 
 # ================= RUN =================
 if __name__ == "__main__":
