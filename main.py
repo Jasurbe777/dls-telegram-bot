@@ -15,7 +15,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
-BBOT_TOKEN = cfg.get("bot_token")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or cfg.get("bot_token")
 ADMIN_ID = int(cfg.get("admin_id"))
 
 YOUTUBE_LINK = cfg.get("youtube_link")
@@ -23,12 +23,12 @@ INSTAGRAM_LINK = cfg.get("instagram_link")
 
 logging.basicConfig(level=logging.INFO)
 
-if not BBOT_TOKEN:
-    raise RuntimeError("BOT TOKEN yo‘q (config.json)")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT TOKEN topilmadi!")
 
 
 # ================== BOT ==================
-bot = Bot(token=BBOT_TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 
@@ -46,12 +46,6 @@ CREATE TABLE IF NOT EXISTS submissions (
 """)
 conn.commit()
 
-def already_sent(user_id: int) -> bool:
-    cur.execute(
-        "SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1",
-        (user_id,)
-    )
-    return cur.fetchone() is not None
 
 # ================== STATES ==================
 class Form(StatesGroup):
@@ -84,7 +78,6 @@ async def start(message: types.Message, state: FSMContext):
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
         "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
     )
-
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
@@ -258,40 +251,47 @@ async def edit(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.callback_query_handler(text="confirm", state=Form.waiting_confirm)
+@dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
-    uid = cb.from_user.id
-
-    if already_sent(uid): 
-        await cb.message.answer("❌ Siz allaqachon yuborgansiz.")
-        await state.finish()
-        return
-
     data = await state.get_data()
-    username = f"@{cb.from_user.username}" if cb.from_user.username else cb.from_user.full_name
+    user = cb.from_user
 
     cur.execute(
-        "INSERT INTO submissions VALUES (?,?,?,?)",
-        (uid, username, data["team"], data["photo"])
+        "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
+        (user.id, data["username"], data["team"], data["photo_file_id"])
     )
     conn.commit()
 
-    n = cfg.get("submission_counter", 1)
-    cfg["submission_counter"] = n + 1
+    counter = cfg.get("submission_counter", 1)
+    cfg["submission_counter"] = counter + 1
     save_config()
 
-    caption = (
-        f"🏆 {n}_Ishtirokchimiz {username}\n"
-        f"📌 Jamoa nomi : {data['team']}\n\n"
-        "✅ BIZDAN UZOQLASHMANG ♻️\n"
-        "👇👇👇\n"
-        "https://t.me/dream_league_Uzb"
-    )
+    admin_caption = (
+    f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+    f"📌 Jamoa nomi : {data['team']}\n\n"
+    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+    f"👇👇👇\n"
+    f"https://t.me/dream_league_Uzb"
+)
 
-    await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
-    await bot.send_photo(uid, data["photo"], caption=caption)
+   # Adminga yuborish
+    await bot.send_photo(
+    ADMIN_ID,
+    data["photo_file_id"],
+    caption=admin_caption
+)
 
-    await cb.message.answer("✅ Ma’lumotlar yuborildi!")
+# Foydalanuvchining o‘ziga ham yuborish
+    await bot.send_photo(
+    cb.from_user.id,
+    data["photo_file_id"],
+    caption=admin_caption
+)
+
+    await cb.message.answer(
+    "✅ Maʼlumotlaringiz qabul qilindi va adminga yuborildi. Omad! 🍀"
+)
+
     await state.finish()
     await cb.answer()
 
