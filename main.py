@@ -258,7 +258,7 @@ async def edit(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.callback_query_handler(text="confirm", state=Form.confirm)
+@dp.callback_query_handler(text="confirm", state=Form.waiting_confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
     uid = cb.from_user.id
 
@@ -291,9 +291,7 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
     await bot.send_photo(uid, data["photo"], caption=caption)
 
-    # 👇 MUHIM: shu joy FUNKSIYA ICHIDA
     await cb.message.answer("✅ Ma’lumotlar yuborildi!")
-
     await state.finish()
     await cb.answer()
 
