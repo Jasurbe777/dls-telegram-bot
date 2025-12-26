@@ -1,286 +1,323 @@
-import logging, os, json, sqlite3, re
-from datetime import datetime, timedelta
+import logging
+import json
+import os
+import sqlite3
+
 from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-# ================= CONFIG =================
-logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT TOKEN yo‘q")
-
+# ================== CONFIG ==================
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
-ADMIN_ID = int(cfg["admin_id"])
-cfg.setdefault("contest_end", None)
-cfg.setdefault("submission_counter", 1)
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or cfg.get("bot_token")
+ADMIN_ID = int(cfg.get("admin_id"))
 
-def save_cfg():
-    with open("config.json", "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+YOUTUBE_LINK = cfg.get("youtube_link")
+INSTAGRAM_LINK = cfg.get("instagram_link")
 
-bot = Bot(BOT_TOKEN)
+logging.basicConfig(level=logging.INFO)
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT TOKEN topilmadi!")
+
+
+# ================== BOT ==================
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# ================= DATABASE =================
-db = sqlite3.connect("database.db")
-cur = db.cursor()
 
+# ================== DATABASE ==================
+conn = sqlite3.connect("submissions.db")
+cur = conn.cursor()
 cur.execute("""
-CREATE TABLE IF NOT EXISTS submissions(
-    user_id INTEGER UNIQUE,
+CREATE TABLE IF NOT EXISTS submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     username TEXT,
     team TEXT,
-    photo TEXT
+    photo_file_id TEXT
 )
 """)
+conn.commit()
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS ads(
-    channel TEXT UNIQUE
-)
-""")
-db.commit()
 
-# ================= HELPERS =================
-def is_admin(uid):
-    return uid == ADMIN_ID
+# ================== STATES ==================
+class Form(StatesGroup):
+    waiting_screenshot = State()
+    waiting_team = State()
+    waiting_confirm = State()
 
-def uname(user):
-    return f"@{user.username}" if user.username else user.full_name
-
-def has_submitted(uid):
-    cur.execute("SELECT 1 FROM submissions WHERE user_id=?", (uid,))
-    return cur.fetchone() is not None
-
-def contest_active():
-    if not cfg["contest_end"]:
-        return False
-    return datetime.utcnow() < datetime.fromisoformat(cfg["contest_end"])
-
-def has_ads():
-    cur.execute("SELECT COUNT(*) FROM ads")
-    return cur.fetchone()[0] > 0
-
-async def check_subs(user_id):
-    cur.execute("SELECT channel FROM ads")
-    rows = cur.fetchall()
-    not_sub = []
-
-    for (ch,) in rows:
-        ch = ch.replace("https://t.me/", "").replace("@", "")
-        try:
-            member = await bot.get_chat_member(f"@{ch}", user_id)
-            if member.status not in ("member", "administrator", "creator"):
-                not_sub.append(f"@{ch}")
-        except:
-            not_sub.append(f"@{ch}")
-    return not_sub
-
-def admin_kb():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📋 Ishtirokchilar ro‘yxati")
-    kb.add("⏳ Konkursni boshqarish")
-    kb.add("🔢 Sozlash (raqam kiritish)")
-    kb.add("📢 Reklamalarni boshqarish")
-    return kb
-
-# ================= STATES =================
-class UserForm(StatesGroup):
-    photo = State()
-    team = State()
-    confirm = State()
 
 class AdminForm(StatesGroup):
-    contest_days = State()
-    counter = State()
-    add_ad = State()
+    waiting_promo = State()
+    waiting_counter = State()
 
-# ================= START =================
-@dp.message_handler(commands="start", state="*")
-async def start(msg: types.Message, state: FSMContext):
-    await state.finish()
 
-    if is_admin(msg.from_user.id):
-        await msg.answer("👑 Admin panel", reply_markup=admin_kb())
-        return
+# ================== HELPERS ==================
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
 
-    if not contest_active():
-        await msg.answer(
-            "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-            "⛔ Hozircha konkurs yopiq."
+
+def save_config():
+    with open("config.json", "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+# ================== START ==================
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    text = (
+        f"👋 Salom!\n\n"
+        f"👤 Egasi: {cfg.get('owner_name')}\n"
+        f"ℹ️ {cfg.get('owner_about')}\n\n"
+        f"Boshlash uchun tugmani bosing 👇"
+    )
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
+
+    await message.answer(text, reply_markup=kb)
+
+    if is_admin(message.from_user.id):
+        admin_kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
+        admin_kb.add("Reklamalarni sozlash")
+        admin_kb.add("Sozlash (raqam kiritish)")
+        await message.answer("🔧 Admin panel", reply_markup=admin_kb)
+
+
+# ================== START FLOW ==================
+@dp.callback_query_handler(lambda c: c.data == "start_flow")
+async def start_flow(cb: types.CallbackQuery):
+    promo_channels = cfg.get("promo_channels", [])
+
+    if not promo_channels:
+        await cb.message.answer(
+            "📸 Dream League akkauntingiz skrinshotini yuboring:"
         )
+        await Form.waiting_screenshot.set()
+        await cb.answer()
         return
 
-    if has_submitted(msg.from_user.id):
-        await msg.answer("❌ Siz allaqachon qatnashgansiz.")
-        return
+    kb = InlineKeyboardMarkup(row_width=1)
 
-    kb = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("Boshlash", callback_data="start_user")
+    for ch in promo_channels:
+        url = ch if ch.startswith("http") else f"https://t.me/{ch.lstrip('@')}"
+        kb.add(InlineKeyboardButton("Obuna bo‘lish", url=url)) # type: ignore
+
+    kb.add(
+        InlineKeyboardButton(
+            "Men obuna bo‘ldim (tekshirilsin)",
+            callback_data="check_subs"
+        ) # type: ignore
     )
-    await msg.answer(
-        "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-        "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️",
+
+    await cb.message.answer(
+        "Iltimos, quyidagi kanallarga a’zo bo‘ling va so‘ng tekshirish tugmasini bosing:",
         reply_markup=kb
     )
+    await cb.answer()
 
-# ================= USER FLOW =================
-@dp.callback_query_handler(lambda c: c.data == "start_user")
-async def start_user(cb: types.CallbackQuery):
-    if has_ads():
-        not_sub = await check_subs(cb.from_user.id)
-        if not_sub:
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            for ch in not_sub:
-                kb.add(types.InlineKeyboardButton("Obuna bo‘lish", url=f"https://t.me/{ch[1:]}"))
-            kb.add(types.InlineKeyboardButton("Men obuna bo‘ldim", callback_data="check_subs"))
-            await cb.message.answer(
-                "Iltimos, quyidagi kanallarga obuna bo‘ling:",
-                reply_markup=kb
-            )
-            return
-
-    await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
-    await UserForm.photo.set()
-
-@dp.callback_query_handler(lambda c: c.data == "check_subs")
-async def recheck(cb: types.CallbackQuery):
-    not_sub = await check_subs(cb.from_user.id)
-    if not_sub:
-        await cb.message.answer("❌ Siz hali obuna bo‘lmadingiz:\n" + "\n".join(not_sub))
-        return
-    await cb.message.answer("📸 Profil rasmini yuboring:")
-    await UserForm.photo.set()
-
-# ================= USER FORM =================
-@dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
-async def get_photo(msg: types.Message, state: FSMContext):
-    await state.update_data(photo=msg.photo[-1].file_id)
-    await msg.answer("🏷 Jamoa nomini kiriting:")
-    await UserForm.team.set()
-
-@dp.message_handler(state=UserForm.team)
-async def get_team(msg: types.Message, state: FSMContext):
-    await state.update_data(team=msg.text)
-    data = await state.get_data()
-
-    kb = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"),
-        types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit")
+@dp.message_handler(
+    lambda m: is_admin(m.from_user.id)
+    and m.text
+    and m.text.strip().lower() == "sozlash (raqam kiritish)"
+)
+async def admin_set_counter(message: types.Message):
+    await message.answer(
+        "🔢 Ishtirokchilar tartib raqamini kiriting.\n\n"
+        "Masalan:\n"
+        "1  → 1 dan boshlanadi\n"
+        "10 → 10 dan boshlanadi"
     )
+    await AdminForm.waiting_counter.set()
 
-    await msg.answer_photo(
-        data["photo"],
-        caption=f"👤 {uname(msg.from_user)}\n🏷 Jamoa: {data['team']}",
-        reply_markup=kb
-    )
-    await UserForm.confirm.set()
-
-@dp.callback_query_handler(lambda c: c.data == "edit", state=UserForm.confirm)
-async def edit(cb: types.CallbackQuery):
-    await cb.message.answer("✏️ Yangi jamoa nomini kiriting:")
-    await UserForm.team.set()
-
-@dp.callback_query_handler(lambda c: c.data == "confirm", state=UserForm.confirm)
-async def confirm(cb: types.CallbackQuery, state: FSMContext):
-    user = cb.from_user
-    if has_submitted(user.id):
-        await cb.message.answer("❌ Qayta yuborish mumkin emas")
+@dp.message_handler(state=AdminForm.waiting_counter)
+async def process_counter_input(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
         await state.finish()
         return
 
-    data = await state.get_data()
-    cur.execute(
-        "INSERT INTO submissions VALUES(?,?,?,?)",
-        (user.id, uname(user), data["team"], data["photo"])
-    )
-    db.commit()
+    text = message.text.strip()
 
-    num = cfg["submission_counter"]
-    cfg["submission_counter"] += 1
-    save_cfg()
+    if not text.isdigit() or int(text) < 1:
+        await message.answer(
+            "❌ Noto‘g‘ri raqam.\n"
+            "Iltimos, 1 yoki undan katta butun son kiriting."
+        )
+        return
+
+    new_counter = int(text)
+    cfg["submission_counter"] = new_counter
+    save_config()
+
+    await message.answer(
+        f"✅ Tayyor!\n"
+        f"Keyingi ishtirokchi raqami {new_counter} dan boshlanadi."
+    )
+
+    await state.finish()
+
+
+# ================== CHECK SUBS ==================
+@dp.callback_query_handler(lambda c: c.data == "check_subs")
+async def check_subs(cb: types.CallbackQuery):
+    promo_channels = cfg.get("promo_channels", [])
+
+    # Agar admin reklama qo‘shmagan bo‘lsa — o‘tkazib yuboriladi
+    if not promo_channels:
+        await cb.message.answer(
+            "📸 Dream League profilingiz rasmini yuboring:"
+        )
+        await Form.waiting_screenshot.set()
+        await cb.answer()
+        return
+
+    for ch in promo_channels:
+        chat_id = ch if ch.startswith("-100") else "@" + ch.lstrip("@").replace("https://t.me/", "")
+        try:
+            member = await bot.get_chat_member(chat_id, cb.from_user.id)
+            if member.status in ("left", "kicked"):
+                await cb.message.answer(
+                    f"❌ Siz {ch} kanaliga obuna bo‘lmagansiz."
+                )
+                await cb.answer()
+                return
+        except Exception:
+            await cb.message.answer(
+                f"⚠️ Kanalni tekshirib bo‘lmadi: {ch}"
+            )
+            await cb.answer()
+            return
+
+    await cb.message.answer(
+        "✅ Hammasi joyida.\n📸 Skrinshot yuboring:"
+    )
+    await Form.waiting_screenshot.set()
+    await cb.answer()
+
+
+# ================== SCREENSHOT ==================
+@dp.message_handler(content_types=["photo"], state=Form.waiting_screenshot)
+async def get_screenshot(message: types.Message, state: FSMContext):
+    await state.update_data(photo_file_id=message.photo[-1].file_id)
+    await message.answer("🏷 Jamoa nomini kiriting:")
+    await Form.waiting_team.set()
+
+
+@dp.message_handler(state=Form.waiting_team)
+async def get_team(message: types.Message, state: FSMContext):
+    team = message.text.strip()
+    if not team:
+        await message.answer("❌ Jamoa nomi noto‘g‘ri. Qayta kiriting:")
+        return
+
+    await state.update_data(team=team)
+
+    data = await state.get_data()
+    user = message.from_user
+    username = f"@{user.username}" if user.username else user.full_name
+    await state.update_data(username=username)
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Tasdiqlash", callback_data="confirm")) # type: ignore
+    kb.add(InlineKeyboardButton("Tahrirlash", callback_data="edit")) # type: ignore
 
     caption = (
-        f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
-        f"📌 Jamoa nomi : {data['team']}\n\n"
-        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-        f"https://t.me/dream_league_Uzb"
+        f"👤 {username}\n"
+        f"🏷 Jamoa: {team}\n\n"
+        f"Maʼlumotlar to‘g‘rimi?"
     )
 
-    await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
-    await bot.send_photo(user.id, data["photo"], caption=caption)
-    await state.finish()
-
-# ================= ADMIN =================
-@dp.message_handler(text="📋 Ishtirokchilar ro‘yxati")
-async def admin_list(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    cur.execute("SELECT username, team FROM submissions")
-    rows = cur.fetchall()
-    text = f"📋 Jami: {len(rows)}\n\n"
-    for i, (u, t) in enumerate(rows, 1):
-        text += f"{i}. {u} — {t}\n"
-    await msg.answer(text)
-
-@dp.message_handler(text="⏳ Konkursni boshqarish")
-async def admin_contest(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    await msg.answer("Necha KUN davom etadi?")
-    await AdminForm.contest_days.set()
-
-@dp.message_handler(state=AdminForm.contest_days)
-async def set_contest(msg: types.Message, state: FSMContext):
-    if not msg.text.isdigit():
-        await msg.answer("Faqat raqam")
-        return
-    cfg["contest_end"] = (datetime.utcnow() + timedelta(days=int(msg.text))).isoformat()
-    save_cfg()
-    await msg.answer("✅ Konkurs boshlandi")
-    await state.finish()
-
-@dp.message_handler(text="🔢 Sozlash (raqam kiritish)")
-async def set_counter(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    await msg.answer("Boshlang‘ich raqam:")
-    await AdminForm.counter.set()
-
-@dp.message_handler(state=AdminForm.counter)
-async def save_counter(msg: types.Message, state: FSMContext):
-    cfg["submission_counter"] = int(msg.text)
-    save_cfg()
-    await msg.answer("✅ Saqlandi")
-    await state.finish()
-
-@dp.message_handler(text="📢 Reklamalarni boshqarish")
-async def ads(msg: types.Message):
-    if not is_admin(msg.from_user.id): return
-    cur.execute("SELECT channel FROM ads")
-    rows = cur.fetchall()
-    text = "📢 Kanallar:\n"
-    for r in rows:
-        text += f"- {r[0]}\n"
-    kb = types.InlineKeyboardMarkup().add(
-        types.InlineKeyboardButton("➕ Qo‘shish", callback_data="add_ad")
+    await message.answer_photo(
+        photo=data["photo_file_id"],
+        caption=caption,
+        reply_markup=kb
     )
-    await msg.answer(text, reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data == "add_ad")
-async def add_ad(cb: types.CallbackQuery):
-    await cb.message.answer("Kanal linkini yuboring:")
-    await AdminForm.add_ad.set()
+    await Form.waiting_confirm.set()
 
-@dp.message_handler(state=AdminForm.add_ad)
-async def save_ad(msg: types.Message, state: FSMContext):
-    cur.execute("INSERT OR IGNORE INTO ads VALUES(?)", (msg.text.strip(),))
-    db.commit()
-    await msg.answer("✅ Qo‘shildi")
+
+# ================== CONFIRM ==================
+@dp.callback_query_handler(lambda c: c.data == "edit", state=Form.waiting_confirm)
+async def edit(cb: types.CallbackQuery, state: FSMContext):
+    await cb.message.answer("🏷 Jamoa nomini qayta kiriting:")
+    await Form.waiting_team.set()
+    await cb.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
+async def confirm(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    user = cb.from_user
+
+    cur.execute(
+        "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
+        (user.id, data["username"], data["team"], data["photo_file_id"])
+    )
+    conn.commit()
+
+    counter = cfg.get("submission_counter", 1)
+    cfg["submission_counter"] = counter + 1
+    save_config()
+
+    admin_caption = (
+    f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+    f"📌 Jamoa nomi : {data['team']}\n\n"
+    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+    f"👇👇👇\n"
+    f"https://t.me/dream_league_Uzb"
+)
+
+    await bot.send_photo(
+    ADMIN_ID,
+    data["photo_file_id"],
+    caption=admin_caption
+)
+
+    await cb.message.answer("✅ Maʼlumotlar adminga yuborildi. Rahmat!")
+    await state.finish()
+    await cb.answer()
+
+
+# ================== ADMIN ==================
+@dp.message_handler(lambda m: is_admin(m.from_user.id) and m.text == "Reklamalarni sozlash")
+async def admin_promos(message: types.Message):
+    kb = InlineKeyboardMarkup()
+    for i, ch in enumerate(cfg.get("promo_channels", [])):
+        kb.add(InlineKeyboardButton(f"❌ {ch}", callback_data=f"delpromo:{i}")) # type: ignore
+    kb.add(InlineKeyboardButton("➕ Kanal qo‘shish", callback_data="addpromo")) # type: ignore
+    await message.answer("📢 Reklama kanallari:", reply_markup=kb)
+
+
+@dp.callback_query_handler(lambda c: c.data == "addpromo")
+async def addpromo(cb: types.CallbackQuery):
+    await cb.message.answer("➕ Kanal username yoki linkini kiriting:")
+    await AdminForm.waiting_promo.set()
+    await cb.answer()
+
+
+@dp.message_handler(state=AdminForm.waiting_promo)
+async def savepromo(message: types.Message, state: FSMContext):
+    cfg.setdefault("promo_channels", []).append(message.text.strip())
+    save_config()
+    await message.answer("✅ Kanal qo‘shildi")
     await state.finish()
 
-# ================= RUN =================
+
+@dp.callback_query_handler(lambda c: c.data.startswith("delpromo:"))
+async def delpromo(cb: types.CallbackQuery):
+    idx = int(cb.data.split(":")[1])
+    cfg["promo_channels"].pop(idx)
+    save_config()
+    await cb.message.answer("🗑 Kanal o‘chirildi")
+    await cb.answer()
+
+
+# ================== RUN ==================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
