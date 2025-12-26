@@ -1,277 +1,280 @@
-import logging
-import os
-import json
-import sqlite3
+import logging, os, json, sqlite3, re
 from datetime import datetime, timedelta
-
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-
-# ================== CONFIG ==================
-
+# ================= CONFIG =================
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("BOT TOKEN topilmadi!")
+    raise RuntimeError("BOT TOKEN topilmadi")
 
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
 ADMIN_ID = int(cfg["admin_id"])
+cfg.setdefault("contest_end", None)
+cfg.setdefault("submission_counter", 1)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
-
-
-# ================== DATABASE ==================
-
-conn = sqlite3.connect("database.db")
-cur = conn.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS submissions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER UNIQUE,
-    username TEXT,
-    team TEXT,
-    photo_file_id TEXT
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS ads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel TEXT,
-    expires_at TEXT
-)
-""")
-
-conn.commit()
-
-
-# ================== HELPERS ==================
-
-def save_config():
+def save_cfg():
     with open("config.json", "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
-def is_admin(uid: int) -> bool:
-    return uid == ADMIN_ID
+# ================= DATABASE =================
+db = sqlite3.connect("database.db")
+cur = db.cursor()
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS submissions(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+user_id INTEGER UNIQUE,
+username TEXT,
+team TEXT,
+photo TEXT
+)
+""")
 
-def has_submitted(uid: int) -> bool:
+cur.execute("""
+CREATE TABLE IF NOT EXISTS ads(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+channel TEXT,
+expires TEXT
+)
+""")
+
+db.commit()
+
+# ================= HELPERS =================
+def is_admin(uid): return uid == ADMIN_ID
+
+def username(user):
+    return f"@{user.username}" if user.username else user.full_name
+
+def has_submitted(uid):
     cur.execute("SELECT 1 FROM submissions WHERE user_id=?", (uid,))
     return cur.fetchone() is not None
 
+def contest_active():
+    if not cfg["contest_end"]:
+        return False
+    return datetime.utcnow() < datetime.fromisoformat(cfg["contest_end"])
 
-def get_username(user: types.User) -> str:
-    return f"@{user.username}" if user.username else user.full_name
-
-
-def clean_expired_ads():
+def clean_ads():
     now = datetime.utcnow().isoformat()
-    cur.execute("DELETE FROM ads WHERE expires_at <= ?", (now,))
-    conn.commit()
+    cur.execute("DELETE FROM ads WHERE expires<=?", (now,))
+    db.commit()
 
-
-def get_active_ads_text() -> str:
-    clean_expired_ads()
+def ads_text():
+    clean_ads()
     cur.execute("SELECT channel FROM ads")
     rows = cur.fetchall()
-    if not rows:
-        return ""
-    text = "\n".join([f"👉 {r[0]}" for r in rows])
-    return f"\n\n📢 Reklama:\n{text}"
+    if not rows: return ""
+    return "\n\n" + "\n".join([f"👉 {r[0]}" for r in rows])
 
-
-def admin_keyboard():
+def admin_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
     kb.add("📋 Ishtirokchilar ro‘yxati")
-
-    if cfg.get("contest_open", True):
-        kb.add("⛔ Konkursni yopish")
-    else:
-        kb.add("🟢 Konkursni ochish")
-
-    kb.add("📢 Reklama kanalini qo‘shish")
-    kb.add("🗑 Reklama kanalini o‘chirish")
+    kb.add("⏳ Konkursni boshqarish")
     kb.add("🔢 Sozlash (raqam kiritish)")
     return kb
 
-
-# ================== STATES ==================
-
-class Form(StatesGroup):
-    screenshot = State()
+# ================= STATES =================
+class UserForm(StatesGroup):
+    photo = State()
     team = State()
     confirm = State()
 
-class AdForm(StatesGroup):
-    channel = State()
-    duration = State()
+class AdminForm(StatesGroup):
+    contest_time = State()
+    edit_counter = State()
 
-
-# ================== START ==================
-
-@dp.message_handler(commands=["start"], state="*")
-async def start(message: types.Message, state: FSMContext):
+# ================= START =================
+@dp.message_handler(commands="start", state="*")
+async def start(msg: types.Message, state: FSMContext):
     await state.finish()
 
-    if is_admin(message.from_user.id):
-        await message.answer("👑 Admin panel", reply_markup=admin_keyboard())
+    # ===== ADMIN =====
+    if is_admin(msg.from_user.id):
+        await msg.answer(
+            "👑 Admin panel",
+            reply_markup=admin_kb()
+        )
         return
 
-    if not cfg.get("contest_open", True):
-        await message.answer("⛔ Konkurs yopiq.")
+    # ===== KONKURS YOPIQ =====
+    if not contest_active():
+        await msg.answer(
+            "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
+            "⛔ Hozircha konkurs yopiq.\n"
+            "📢 Natijalarni kuting!"
+        )
         return
 
-    if has_submitted(message.from_user.id):
-        await message.answer("❌ Siz allaqachon qatnashgansiz.")
+    # ===== OLDIN QATNASHGAN =====
+    if has_submitted(msg.from_user.id):
+        await msg.answer(
+            "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
+            "❌ Siz allaqachon konkursda qatnashgansiz."
+        )
         return
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
-
-    await message.answer("📸 Konkursda qatnashish uchun boshlang:", reply_markup=kb)
-
-
-# ================== USER FLOW ==================
-
-@dp.callback_query_handler(lambda c: c.data == "start_flow")
-async def start_flow(cb: types.CallbackQuery):
-    await cb.message.answer("📸  Dream League profilingiz rasmini yuboring:")
-    await Form.screenshot.set()
-    await cb.answer()
-
-
-@dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.screenshot)
-async def screenshot(message: types.Message, state: FSMContext):
-    await state.update_data(photo=message.photo[-1].file_id)
-    await message.answer("🏷 Jamoa nomini kiriting:")
-    await Form.team.set()
-
-
-@dp.message_handler(state=Form.team)
-async def team(message: types.Message, state: FSMContext):
-    await state.update_data(team=message.text)
-
-    data = await state.get_data()
-    caption = (
-        f"👤 {get_username(message.from_user)}\n"
-        f"🏷 Jamoa: {data['team']}\n\n"
-        "Tasdiqlaysizmi?"
+    # ===== YANGI FOYDALANUVCHI =====
+    kb = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("Boshlash", callback_data="start") # type: ignore
     )
 
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
+    await msg.answer(
+        "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
+        "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️",
+        reply_markup=kb
+    )
+
+
+# ================= USER FLOW =================
+@dp.callback_query_handler(lambda c: c.data == "start")
+async def start_user(cb: types.CallbackQuery):
+    await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
+    await UserForm.photo.set()
+    await cb.answer()
+
+@dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
+async def user_photo(msg: types.Message, state: FSMContext):
+    await state.update_data(photo=msg.photo[-1].file_id)
+    await msg.answer("🏷 Jamoa nomini kiriting:")
+    await UserForm.team.set()
+
+@dp.message_handler(state=UserForm.team)
+async def user_team(msg: types.Message, state: FSMContext):
+    await state.update_data(team=msg.text)
+    data = await state.get_data()
+
+    cap = f"👤 {username(msg.from_user)}\n🏷 {data['team']}\n\nTasdiqlaysizmi?"
+    kb = types.InlineKeyboardMarkup(row_width=2).add(
         types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm"), # type: ignore
         types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit") # type: ignore
     )
 
-    await message.answer_photo(data["photo"], caption=caption, reply_markup=kb)
-    await Form.confirm.set()
+    await msg.answer_photo(data["photo"], caption=cap, reply_markup=kb)
+    await UserForm.confirm.set()
 
-
-@dp.callback_query_handler(lambda c: c.data == "edit", state=Form.confirm)
-async def edit(cb: types.CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(lambda c: c.data == "edit", state=UserForm.confirm)
+async def edit_team(cb: types.CallbackQuery):
     await cb.message.answer("✏️ Yangi jamoa nomini kiriting:")
-    await Form.team.set()
+    await UserForm.team.set()
     await cb.answer()
 
-
-@dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.confirm)
+@dp.callback_query_handler(lambda c: c.data == "confirm", state=UserForm.confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
     user = cb.from_user
     if has_submitted(user.id):
-        await cb.message.answer("❌ Qayta yuborish mumkin emas.")
+        await cb.message.answer("❌ Qayta yuborish mumkin emas")
         await state.finish()
         return
 
     data = await state.get_data()
-    username = get_username(user)
-
     cur.execute(
-        "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
-        (user.id, username, data["team"], data["photo"])
+        "INSERT INTO submissions(user_id,username,team,photo) VALUES(?,?,?,?)",
+        (user.id, username(user), data["team"], data["photo"])
     )
-    conn.commit()
+    db.commit()
 
-    counter = cfg.get("submission_counter", 1)
-    cfg["submission_counter"] = counter + 1
-    save_config()
+    num = cfg["submission_counter"]
+    cfg["submission_counter"] += 1
+    save_cfg()
 
     caption = (
-        f"🏆 {counter}_Ishtirokchimiz {username}\n"
+        f"🏆 {num}_Ishtirokchimiz {username(user)}\n"
         f"📌 Jamoa nomi : {data['team']}"
-        + get_active_ads_text()
+        + ads_text()
     )
 
     await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
     await bot.send_photo(user.id, data["photo"], caption=caption)
 
-    await cb.message.answer("✅ Qabul qilindi.")
+    await cb.message.answer("✅ Qabul qilindi")
     await state.finish()
     await cb.answer()
 
+# ================= ADMIN =================
+@dp.message_handler(lambda m: m.text == "📋 Ishtirokchilar ro‘yxati")
+async def list_users(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
 
-# ================== ADMIN ADS ==================
+    cur.execute("SELECT username,team FROM submissions")
+    rows = cur.fetchall()
 
-@dp.message_handler(lambda m: m.text == "📢 Reklama kanalini qo‘shish")
-async def add_ad(message: types.Message):
-    if not is_admin(message.from_user.id):
+    text = f"📊 Jami: {len(rows)}\n\n"
+    for i,(u,t) in enumerate(rows,1):
+        text += f"{i}. {u} — {t}\n"
+
+    await msg.answer(text)
+
+@dp.message_handler(lambda m: m.text == "🔢 Sozlash (raqam kiritish)")
+async def set_counter(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
+    await msg.answer("🔢 Yangi boshlang‘ich raqamni kiriting:")
+    await AdminForm.edit_counter.set()
+
+@dp.message_handler(state=AdminForm.edit_counter)
+async def save_counter(msg: types.Message, state: FSMContext):
+    if not msg.text.isdigit():
+        await msg.answer("❌ Faqat raqam kiriting")
         return
-    await message.answer("📢 Kanal linkini yuboring:")
-    await AdForm.channel.set()
-
-
-@dp.message_handler(state=AdForm.channel)
-async def ad_channel(message: types.Message, state: FSMContext):
-    await state.update_data(channel=message.text)
-    await message.answer("⏳ Necha kun bo‘lsin? (masalan: 3)")
-    await AdForm.duration.set()
-
-
-@dp.message_handler(state=AdForm.duration)
-async def ad_duration(message: types.Message, state: FSMContext):
-    days = int(message.text)
-    data = await state.get_data()
-
-    expires = datetime.utcnow() + timedelta(days=days)
-
-    cur.execute(
-        "INSERT INTO ads (channel, expires_at) VALUES (?,?)",
-        (data["channel"], expires.isoformat())
-    )
-    conn.commit()
-
-    await message.answer("✅ Reklama qo‘shildi.", reply_markup=admin_keyboard())
+    cfg["submission_counter"] = int(msg.text)
+    save_cfg()
+    await msg.answer("✅ Qabul qilindi", reply_markup=admin_kb())
     await state.finish()
 
+@dp.message_handler(lambda m: m.text == "⏳ Konkursni boshqarish")
+async def contest_manage(msg: types.Message):
+    if not is_admin(msg.from_user.id): return
 
-@dp.message_handler(lambda m: m.text == "🗑 Reklama kanalini o‘chirish")
-async def remove_ad(message: types.Message):
-    if not is_admin(message.from_user.id):
+    if contest_active():
+        end = cfg["contest_end"]
+        kb = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit_contest"), # type: ignore
+            types.InlineKeyboardButton("❌ Yopish", callback_data="close_contest") # type: ignore
+        )
+        await msg.answer(f"📢 Konkurs davom etmoqda\n⏳ Tugash: {end}", reply_markup=kb)
+    else:
+        await msg.answer("⏳ Necha muddat? (masalan: 3 kun, 5 soat, 1 oy)")
+        await AdminForm.contest_time.set()
+
+@dp.message_handler(state=AdminForm.contest_time)
+async def set_contest(msg: types.Message, state: FSMContext):
+    m = re.match(r"(\d+)\s*(kun|soat|oy)", msg.text.lower())
+    if not m:
+        await msg.answer("❌ Masalan: 3 kun, 5 soat")
         return
 
-    cur.execute("SELECT id, channel FROM ads")
-    rows = cur.fetchall()
-    if not rows:
-        await message.answer("📭 Reklamalar yo‘q.")
-        return
+    n, t = int(m.group(1)), m.group(2)
+    delta = timedelta(days=n) if t=="kun" else timedelta(hours=n) if t=="soat" else timedelta(days=30*n)
 
-    text = "🗑 O‘chirish uchun ID yuboring:\n\n"
-    for r in rows:
-        text += f"{r[0]}. {r[1]}\n"
+    cfg["contest_end"] = (datetime.utcnow()+delta).isoformat()
+    save_cfg()
 
-    await message.answer(text)
+    await msg.answer("✅ Konkurs boshlandi", reply_markup=admin_kb())
+    await state.finish()
 
+@dp.callback_query_handler(lambda c: c.data == "close_contest")
+async def close_contest(cb: types.CallbackQuery):
+    cfg["contest_end"] = None
+    save_cfg()
+    await cb.message.answer("⛔ Konkurs yopildi", reply_markup=admin_kb())
+    await cb.answer()
 
-# ================== RUN ==================
+@dp.callback_query_handler(lambda c: c.data == "edit_contest")
+async def edit_contest(cb: types.CallbackQuery):
+    await cb.message.answer("⏳ Yangi muddatni kiriting:")
+    await AdminForm.contest_time.set()
+    await cb.answer()
 
+# ================= RUN =================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
