@@ -276,25 +276,25 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
 )
 
    # Adminga yuborish
-await bot.send_photo(
+    await bot.send_photo(
     ADMIN_ID,
-    data["photo_file_id"],
-    caption=admin_caption
+    data["photo_file_id"], # type: ignore
+    caption=admin_caption # type: ignore
 )
 
 # Foydalanuvchining o‘ziga ham yuborish
-await bot.send_photo(
-    cb.from_user.id,
-    data["photo_file_id"],
-    caption=admin_caption
+    await bot.send_photo(
+    cb.from_user.id, # type: ignore
+    data["photo_file_id"], # type: ignore
+    caption=admin_caption # type: ignore
 )
 
-await cb.message.answer(
+await cb.message.answer( # type: ignore
     "✅ Maʼlumotlaringiz qabul qilindi va adminga yuborildi. Omad! 🍀"
 )
 
-await state.finish()
-await cb.answer()
+await state.finish() # type: ignore
+await cb.answer() # type: ignore
 
 
 # ================== ADMIN ==================
