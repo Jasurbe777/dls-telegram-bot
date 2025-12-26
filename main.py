@@ -145,17 +145,53 @@ async def start(msg: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data == "start_user")
 async def start_user(cb: types.CallbackQuery):
     not_sub = await check_subs(cb.from_user.id)
+
     if not_sub:
-        text = "❌ Iltimos, quyidagi kanallarga obuna bo‘ling:\n\n"
-        text += "\n".join(not_sub)
-        kb = types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("🔄 Tekshirish", callback_data="start_user")
+        kb = types.InlineKeyboardMarkup(row_width=1)
+
+        for ch in not_sub:
+            kb.add(
+                types.InlineKeyboardButton(
+                    "Obuna bo‘lish",
+                    url=f"https://t.me/{ch.replace('@','')}"
+                )
+            )
+
+        kb.add(
+            types.InlineKeyboardButton(
+                "Men obuna bo‘ldim (tekshirilsin)",
+                callback_data="start_user"
+            )
         )
-        await cb.message.answer(text, reply_markup=kb)
+
+        await cb.message.answer(
+            "Iltimos, quyidagi kanallarga a’zo bo‘ling va so‘ng tekshirish tugmasini bosing:",
+            reply_markup=kb
+        )
+        await cb.answer()
         return
 
+    # ✅ agar hammasiga obuna bo‘lsa
     await cb.message.answer("📸 Dream League profilingiz rasmini yuboring:")
     await UserForm.photo.set()
+    await cb.answer()
+
+async def check_subs(user_id):
+    cur.execute("SELECT channel FROM ads")
+    rows = cur.fetchall()
+    not_sub = []
+
+    for (ch,) in rows:
+        ch = ch.replace("https://t.me/", "").replace("@", "")
+        try:
+            m = await bot.get_chat_member(f"@{ch}", user_id)
+            if m.status not in ("member", "administrator", "creator"):
+                not_sub.append(f"@{ch}")
+        except:
+            not_sub.append(f"@{ch}")
+
+    return not_sub
+
 
 @dp.message_handler(content_types=types.ContentType.PHOTO, state=UserForm.photo)
 async def get_photo(msg: types.Message, state: FSMContext):
@@ -208,10 +244,13 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     save_cfg()
 
     caption = (
-        f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
-        f"📌 Jamoa nomi : {data['team']}"
-        + ads_text()
-    )
+    f"🏆 {num}_Ishtirokchimiz {uname(user)}\n"
+    f"📌 Jamoa nomi : {data['team']}\n\n"
+    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+    f"👇👇👇\n"
+    f"https://t.me/dream_league_Uzb"
+)
+
 
     await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
     await bot.send_photo(user.id, data["photo"], caption=caption)
