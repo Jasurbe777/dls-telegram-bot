@@ -1,7 +1,6 @@
 import logging
 import json
 import os
-from pydoc import text
 import sqlite3
 
 from aiogram import Bot, Dispatcher, executor, types
@@ -72,9 +71,9 @@ def save_config():
 # ================== START ==================
 @dp.message_handler(commands=["start"], state="*")
 async def start(message: types.Message, state: FSMContext):
-    await state.finish()
+    await state.finish()  # 🔴 MUHIM: eski state’larni tozalaydi
 
-    await message.answer(
+    text = (
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
         "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
     )
@@ -89,6 +88,7 @@ async def start(message: types.Message, state: FSMContext):
         admin_kb.add("Reklamalarni sozlash")
         admin_kb.add("Sozlash (raqam kiritish)")
         await message.answer("🔧 Admin panel", reply_markup=admin_kb)
+
 
 
 # ================== START FLOW ==================
@@ -196,7 +196,7 @@ async def check_subs(cb: types.CallbackQuery):
             return
 
     await cb.message.answer(
-        "✅ Hammasi joyida.\n📸 Dream Leagua profilingiz rasmini yuboring:"
+        "✅ Hammasi joyida.\n📸  Dream League profilingiz rasmini yuboring:"
     )
     await Form.waiting_screenshot.set()
     await cb.answer()
@@ -244,53 +244,51 @@ async def get_team(message: types.Message, state: FSMContext):
 
 
 # ================== CONFIRM ==================
-@dp.callback_query_handler(lambda c: c.data == "edit", state=Form.waiting_confirm)
-async def edit(cb: types.CallbackQuery, state: FSMContext):
-    await cb.message.answer("🏷 Jamoa nomini qayta kiriting:")
-    await Form.waiting_team.set()
-    await cb.answer()
-
-
 @dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user = cb.from_user
 
+    # 1️⃣ DB ga saqlash
     cur.execute(
         "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
         (user.id, data["username"], data["team"], data["photo_file_id"])
     )
     conn.commit()
 
+    # 2️⃣ Ishtirokchi raqami
     counter = cfg.get("submission_counter", 1)
     cfg["submission_counter"] = counter + 1
     save_config()
 
-    admin_caption = (
-    f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
-    f"📌 Jamoa nomi : {data['team']}\n\n"
-    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-    f"👇👇👇\n"
-    f"https://t.me/dream_league_Uzb"
-)
+    # 3️⃣ Caption (ADMIN + USER uchun bir xil)
+    caption = (
+        f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+        f"📌 Jamoa nomi : {data['team']}\n\n"
+        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+        f"👇👇👇\n"
+        f"https://t.me/dream_league_Uzb"
+    )
 
-   # Adminga yuborish
+    # 4️⃣ Adminga yuborish (xavfsiz)
+    try:
+        await bot.send_photo(
+            ADMIN_ID,
+            data["photo_file_id"],
+            caption=caption
+        )
+    except Exception as e:
+        logging.error(f"❌ Adminga yuborib bo‘lmadi: {e}")
+
+    # 5️⃣ Foydalanuvchiga xabar
+    await cb.message.answer("✅ Maʼlumotlar adminga yuborildi. Quyida yuborilgan maʼlumotlar:")
+
+    # 6️⃣ Foydalanuvchiga ham xuddi o‘sha ko‘rinishda ko‘rsatish
     await bot.send_photo(
-    ADMIN_ID,
-    data["photo_file_id"],
-    caption=admin_caption
-)
-
-# Foydalanuvchining o‘ziga ham yuborish
-    await bot.send_photo(
-    cb.from_user.id,
-    data["photo_file_id"],
-    caption=admin_caption
-)
-
-    await cb.message.answer(
-    "✅ Maʼlumotlaringiz qabul qilindi va adminga yuborildi. Omad! 🍀"
-)
+        cb.from_user.id,
+        data["photo_file_id"],
+        caption=caption
+    )
 
     await state.finish()
     await cb.answer()
