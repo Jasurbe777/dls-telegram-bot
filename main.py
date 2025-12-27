@@ -86,9 +86,9 @@ async def start(message: types.Message, state: FSMContext):
 
     text = (
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-        "Rasm yuborishda faqat o'zingizning akkauntingiz rasmini yuboring."\n\n"
-        "Bir marta rasm yuborish imkoniyatingiz bor holos ❗️\n\n"
-        "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
+        "Rasm yuborishda faqat o'zingizning akkauntingiz rasmini yuboring.\n\n"
+        "Bir marta rasm yuborish imkoniyatingiz bor xolos ❗️\n\n"
+        "📌 Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
     )
 
     if has_submitted(message.from_user.id):
