@@ -293,8 +293,8 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
 
     # 4️⃣ Caption (ADMIN + USER uchun bir xil)
     caption = (
-        f"🏆 {counter}_Ishtirokchimiz {username}\n"
-        f"📌 Jamoa nomi : {data['team']}\n\n"
+        f"🕴 {counter}_Ishtirokchimiz {username}\n"
+        f"🏆 Jamoa nomi : {data['team']}\n\n"
         f"✅ BIZDAN UZOQLASHMANG ♻️\n"
         f"👇👇👇\n"
         f"https://t.me/dream_league_Uzb"
