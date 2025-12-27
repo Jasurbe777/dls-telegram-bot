@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS submissions (
 """)
 conn.commit()
 
+def already_sent(user_id: int) -> bool:
+    cur.execute("SELECT 1 FROM submissions WHERE user_id = ?", (user_id,))
+    return cur.fetchone() is not None
+
 
 # ================== STATES ==================
 class Form(StatesGroup):
@@ -68,6 +72,13 @@ def save_config():
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+def has_submitted(user_id: int) -> bool:
+    cur.execute(
+        "SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1",
+        (user_id,)
+    )
+    return cur.fetchone() is not None
+
 # ================== START ==================
 @dp.message_handler(commands=["start"], state="*")
 async def start(message: types.Message, state: FSMContext):
@@ -77,6 +88,10 @@ async def start(message: types.Message, state: FSMContext):
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
         "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
     )
+
+    if has_submitted(message.from_user.id):
+        await message.answer("Siz allaqachon ishtirok etgansiz.")
+        return
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
@@ -243,34 +258,49 @@ async def get_team(message: types.Message, state: FSMContext):
     await Form.waiting_confirm.set()
 
 
-# ================== CONFIRM ==================
+## ================== CONFIRM ==================
 @dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
     user = cb.from_user
+    uid = user.id
 
-    # 1️⃣ DB ga saqlash
+    # 🚫 1️⃣ Oldin yuborganmi — tekshiramiz
+    if already_sent(uid):
+        await cb.message.answer("❌ Siz allaqachon konkursda qatnashgansiz.")
+        await state.finish()
+        await cb.answer()
+        return
+
+    data = await state.get_data()
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else user.full_name
+    )
+
+    # 2️⃣ DB ga saqlash
     cur.execute(
         "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
-        (user.id, data["username"], data["team"], data["photo_file_id"])
+        (uid, username, data["team"], data["photo_file_id"])
     )
     conn.commit()
 
-    # 2️⃣ Ishtirokchi raqami
+    # 3️⃣ Ishtirokchi raqami
     counter = cfg.get("submission_counter", 1)
     cfg["submission_counter"] = counter + 1
     save_config()
 
-    # 3️⃣ Caption (ADMIN + USER uchun bir xil)
+    # 4️⃣ Caption (ADMIN + USER uchun bir xil)
     caption = (
-        f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+        f"🏆 {counter}_Ishtirokchimiz {username}\n"
         f"📌 Jamoa nomi : {data['team']}\n\n"
         f"✅ BIZDAN UZOQLASHMANG ♻️\n"
         f"👇👇👇\n"
         f"https://t.me/dream_league_Uzb"
     )
 
-    # 4️⃣ Adminga yuborish (xavfsiz)
+    # 5️⃣ Adminga yuborish
     try:
         await bot.send_photo(
             ADMIN_ID,
@@ -280,18 +310,22 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         logging.error(f"❌ Adminga yuborib bo‘lmadi: {e}")
 
-    # 5️⃣ Foydalanuvchiga xabar
-    await cb.message.answer("✅ Maʼlumotlar adminga yuborildi. Quyida yuborilgan maʼlumotlar:")
+    # 6️⃣ Foydalanuvchiga xabar
+    await cb.message.answer(
+        "✅ Maʼlumotlaringiz adminga yuborildi.\n"
+        "📸 Quyida yuborgan maʼlumotlaringiz:"
+    )
 
-    # 6️⃣ Foydalanuvchiga ham xuddi o‘sha ko‘rinishda ko‘rsatish
+    # 7️⃣ Foydalanuvchiga ham xuddi o‘sha post
     await bot.send_photo(
-        cb.from_user.id,
+        uid,
         data["photo_file_id"],
         caption=caption
     )
 
     await state.finish()
     await cb.answer()
+
 
 
 # ================== ADMIN ==================
