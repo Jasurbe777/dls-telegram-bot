@@ -104,6 +104,7 @@ async def start(message: types.Message, state: FSMContext):
         admin_kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
         admin_kb.add("Reklamalarni sozlash")
         admin_kb.add("Sozlash (raqam kiritish)")
+        admin_kb.add("📥 Postlarni DB ga yuklash")
         await message.answer("🔧 Admin panel", reply_markup=admin_kb)
 
 
@@ -363,6 +364,37 @@ async def delpromo(cb: types.CallbackQuery):
     await cb.message.answer("🗑 Kanal o‘chirildi")
     await cb.answer()
 
+@dp.message_handler(lambda m: m.text == "📥 Postlarni DB ga yuklash")
+async def load_posts_to_db(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer("⏳ Postlar DB ga yuklanmoqda, iltimos kuting...")
+
+    added = 0
+
+    async for msg in bot.iter_history(cfg["channel_id"], limit=2000):
+        if not msg.message_id:
+            continue
+
+        post_id = msg.message_id
+        post_link = msg.get_url()
+
+        try:
+            cur.execute(
+                "INSERT OR IGNORE INTO channel_posts (post_id, post_link) VALUES (?,?)",
+                (post_id, post_link)
+            )
+            added += 1
+        except Exception:
+            continue
+
+    conn.commit()
+
+    await message.answer(
+        f"✅ Yakunlandi!\n\n"
+        f"📦 DB ga yuklangan postlar soni: {added}"
+    )
 
 # ================== RUN ==================
 if __name__ == "__main__":
