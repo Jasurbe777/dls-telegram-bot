@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import sqlite3
+CHANNEL_ID = "@dream_league_Uzb"
 
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
