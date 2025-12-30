@@ -1,48 +1,44 @@
 import logging
 import json
-import os
 import sqlite3
 
-
-
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
+# ================== LOG ==================
+logging.basicConfig(level=logging.INFO)
 
 # ================== CONFIG ==================
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
-CHANNEL_ID = cfg.get("channel_id", "@dream_league_Uzb")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or cfg.get("bot_token")
+
+BOT_TOKEN = cfg.get("bot_token")
 ADMIN_ID = int(cfg.get("admin_id"))
-
-YOUTUBE_LINK = cfg.get("youtube_link")
-INSTAGRAM_LINK = cfg.get("instagram_link")
-
-logging.basicConfig(level=logging.INFO)
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT TOKEN topilmadi!")
-
+CHANNEL_ID = cfg.get("channel_id", "@dream_league_Uzb")
+PROMO_CHANNELS = cfg.get("promo_channels", [])
+CONTEST_OPEN = cfg.get("contest_open", True)
 
 # ================== BOT ==================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-
-# ================== DATABASE ==================
+# ================== DB ==================
 conn = sqlite3.connect("submissions.db")
 cur = conn.cursor()
+
 cur.execute("""
 CREATE TABLE IF NOT EXISTS submissions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
+    user_id INTEGER PRIMARY KEY,
     username TEXT,
     team TEXT,
-    photo_file_id TEXT
+    photo TEXT
 )
 """)
 
@@ -54,330 +50,146 @@ CREATE TABLE IF NOT EXISTS channel_posts (
     reactions_text TEXT DEFAULT ''
 )
 """)
+
 conn.commit()
 
-
-def already_sent(user_id: int) -> bool:
-    cur.execute("SELECT 1 FROM submissions WHERE user_id = ?", (user_id,))
-    return cur.fetchone() is not None
-
-
-# ================== STATES ==================
+# ================== FSM ==================
 class Form(StatesGroup):
-    waiting_screenshot = State()
+    waiting_photo = State()
     waiting_team = State()
     waiting_confirm = State()
 
-
-class AdminForm(StatesGroup):
-    waiting_promo = State()
-    waiting_counter = State()
-
-
 # ================== HELPERS ==================
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+def is_admin(uid: int) -> bool:
+    return uid == ADMIN_ID
 
-
-def save_config():
-    with open("config.json", "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-
-def has_submitted(user_id: int) -> bool:
-    cur.execute(
-        "SELECT 1 FROM submissions WHERE user_id = ? LIMIT 1",
-        (user_id,)
-    )
+def already_sent(uid: int) -> bool:
+    cur.execute("SELECT 1 FROM submissions WHERE user_id=?", (uid,))
     return cur.fetchone() is not None
 
-# ================== START ==================
+async def check_subs(user_id: int) -> list:
+    not_joined = []
+    for ch in PROMO_CHANNELS:
+        chat_id = ch.replace("https://t.me/", "").strip()
+        if not chat_id.startswith("@") and not chat_id.startswith("-100"):
+            chat_id = "@" + chat_id
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            if member.status not in ("member", "administrator", "creator"):
+                not_joined.append(chat_id)
+        except Exception:
+            not_joined.append(chat_id)
+    return not_joined
+
+# ================== /START ==================
 @dp.message_handler(commands=["start"], state="*")
 async def start(message: types.Message, state: FSMContext):
-    await state.finish()  # 🔴 MUHIM: eski state’larni tozalaydi
+    await state.finish()
+
+    if already_sent(message.from_user.id):
+        await message.answer("❌ Siz allaqachon ma’lumot yuborgansiz.")
+        return
 
     text = (
         "Salom, bu DLS ISMOILOV konkursida qatnashish uchun yaratilgan bot ✅\n\n"
-        "Rasm yuborishda faqat o'zingizning akkauntingiz rasmini yuboring.\n\n"
-        "Bir marta rasm yuborish imkoniyatingiz bor xolos ❗️\n\n"
-        "📌 Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
+        "Botdagi shartlarga rioya qiling va konkursda bemalol qatnashavering ❗️"
     )
 
-    if has_submitted(message.from_user.id):
-        await message.answer("Siz allaqachon ishtirok etgansiz.")
-        return
-
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Boshlash", callback_data="start_flow")) # type: ignore
+    kb.add(InlineKeyboardButton("Boshlash", callback_data="start_flow"))
 
     await message.answer(text, reply_markup=kb)
 
     if is_admin(message.from_user.id):
-        admin_kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
-        admin_kb.add("Reklamalarni sozlash")
-        admin_kb.add("📥 🔄 Reaksiyalarni yangilash")
+        admin_kb = ReplyKeyboardMarkup(resize_keyboard=True)
         admin_kb.add("🏆 TOP-100 postlar")
         await message.answer("🔧 Admin panel", reply_markup=admin_kb)
 
-
-
 # ================== START FLOW ==================
-@dp.callback_query_handler(lambda c: c.data == "start_flow")
+@dp.callback_query_handler(text="start_flow")
 async def start_flow(cb: types.CallbackQuery):
-    promo_channels = cfg.get("promo_channels", [])
-
-    if not promo_channels:
-        await cb.message.answer(
-            "📸 Dream League akkauntingiz skrinshotini yuboring:"
-        )
-        await Form.waiting_screenshot.set()
+    if not CONTEST_OPEN:
+        await cb.message.answer("⛔ Konkurs yopilgan.")
         await cb.answer()
         return
 
-    kb = InlineKeyboardMarkup(row_width=1)
-
-    for ch in promo_channels:
-        url = ch if ch.startswith("http") else f"https://t.me/{ch.lstrip('@')}"
-        kb.add(InlineKeyboardButton("Obuna bo‘lish", url=url)) # type: ignore
-
-    kb.add(
-        InlineKeyboardButton(
-            "Men obuna bo‘ldim (tekshirilsin)",
-            callback_data="check_subs"
-        ) # type: ignore
-    )
-
-    await cb.message.answer(
-        "Iltimos, quyidagi kanallarga a’zo bo‘ling va so‘ng tekshirish tugmasini bosing:",
-        reply_markup=kb
-    )
-    await cb.answer()
-
-@dp.message_handler(
-    lambda m: is_admin(m.from_user.id)
-    and m.text
-    and m.text.strip().lower() == "sozlash (raqam kiritish)"
-)
-async def admin_set_counter(message: types.Message):
-    await message.answer(
-        "🔢 Ishtirokchilar tartib raqamini kiriting.\n\n"
-        "Masalan:\n"
-        "1  → 1 dan boshlanadi\n"
-        "10 → 10 dan boshlanadi"
-    )
-    await AdminForm.waiting_counter.set()
-
-@dp.message_handler(state=AdminForm.waiting_counter)
-async def process_counter_input(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await state.finish()
-        return
-
-    text = message.text.strip()
-
-    if not text.isdigit() or int(text) < 1:
-        await message.answer(
-            "❌ Noto‘g‘ri raqam.\n"
-            "Iltimos, 1 yoki undan katta butun son kiriting."
-        )
-        return
-
-    new_counter = int(text)
-    cfg["submission_counter"] = new_counter
-    save_config()
-
-    await message.answer(
-        f"✅ Tayyor!\n"
-        f"Keyingi ishtirokchi raqami {new_counter} dan boshlanadi."
-    )
-
-    await state.finish()
-
-
-# ================== CHECK SUBS ==================
-@dp.callback_query_handler(lambda c: c.data == "check_subs")
-async def check_subs(cb: types.CallbackQuery):
-    promo_channels = cfg.get("promo_channels", [])
-
-    # Agar admin reklama qo‘shmagan bo‘lsa — o‘tkazib yuboriladi
-    if not promo_channels:
-        await cb.message.answer(
-            "📸 Dream League profilingiz rasmini yuboring:"
-        )
-        await Form.waiting_screenshot.set()
+    not_joined = await check_subs(cb.from_user.id)
+    if not_joined:
+        text = "❌ Iltimos, quyidagi kanallarga obuna bo‘ling:\n\n"
+        kb = InlineKeyboardMarkup()
+        for ch in not_joined:
+            kb.add(InlineKeyboardButton("Obuna bo‘lish", url=f"https://t.me/{ch.lstrip('@')}"))
+        kb.add(InlineKeyboardButton("Tasdiqlash", callback_data="start_flow"))
+        await cb.message.answer(text, reply_markup=kb)
         await cb.answer()
         return
 
-    for ch in promo_channels:
-        chat_id = ch if ch.startswith("-100") else "@" + ch.lstrip("@").replace("https://t.me/", "")
-        try:
-            member = await bot.get_chat_member(chat_id, cb.from_user.id)
-            if member.status in ("left", "kicked"):
-                await cb.message.answer(
-                    f"❌ Siz {ch} kanaliga obuna bo‘lmagansiz."
-                )
-                await cb.answer()
-                return
-        except Exception:
-            await cb.message.answer(
-                f"⚠️ Kanalni tekshirib bo‘lmadi: {ch}"
-            )
-            await cb.answer()
-            return
-
-    await cb.message.answer(
-        "✅ Hammasi joyida.\n📸  Dream League profilingiz rasmini yuboring:"
-    )
-    await Form.waiting_screenshot.set()
+    await cb.message.answer("📸 Rasm yuboring:")
+    await Form.waiting_photo.set()
     await cb.answer()
 
-
-# ================== SCREENSHOT ==================
-@dp.message_handler(content_types=["photo"], state=Form.waiting_screenshot)
-async def get_screenshot(message: types.Message, state: FSMContext):
-    await state.update_data(photo_file_id=message.photo[-1].file_id)
+# ================== PHOTO ==================
+@dp.message_handler(content_types=types.ContentType.PHOTO, state=Form.waiting_photo)
+async def get_photo(message: types.Message, state: FSMContext):
+    await state.update_data(photo=message.photo[-1].file_id)
     await message.answer("🏷 Jamoa nomini kiriting:")
     await Form.waiting_team.set()
 
-
+# ================== TEAM ==================
 @dp.message_handler(state=Form.waiting_team)
 async def get_team(message: types.Message, state: FSMContext):
-    team = message.text.strip()
-    if not team:
-        await message.answer("❌ Jamoa nomi noto‘g‘ri. Qayta kiriting:")
-        return
-
-    await state.update_data(team=team)
-
-    data = await state.get_data()
-    user = message.from_user
-    username = f"@{user.username}" if user.username else user.full_name
-    await state.update_data(username=username)
+    await state.update_data(team=message.text)
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Tasdiqlash", callback_data="confirm")) # type: ignore
-    kb.add(InlineKeyboardButton("Tahrirlash", callback_data="edit")) # type: ignore
+    kb.add(InlineKeyboardButton("Tasdiqlash", callback_data="confirm"))
+    kb.add(InlineKeyboardButton("Tahrirlash", callback_data="edit"))
 
-    caption = (
-        f"👤 {username}\n"
-        f"🏷 Jamoa: {team}\n\n"
-        f"Maʼlumotlar to‘g‘rimi?"
-    )
-
-    await message.answer_photo(
-        photo=data["photo_file_id"],
-        caption=caption,
-        reply_markup=kb
-    )
-
+    await message.answer("✅ Ma’lumotlarni tasdiqlang:", reply_markup=kb)
     await Form.waiting_confirm.set()
 
+# ================== EDIT ==================
+@dp.callback_query_handler(text="edit", state=Form.waiting_confirm)
+async def edit(cb: types.CallbackQuery, state: FSMContext):
+    await cb.message.answer("🏷 Jamoa nomini qayta kiriting:")
+    await Form.waiting_team.set()
+    await cb.answer()
 
-## ================== CONFIRM ==================
-@dp.callback_query_handler(lambda c: c.data == "confirm", state=Form.waiting_confirm)
+# ================== CONFIRM ==================
+@dp.callback_query_handler(text="confirm", state=Form.waiting_confirm)
 async def confirm(cb: types.CallbackQuery, state: FSMContext):
-    user = cb.from_user
-    uid = user.id
-
-    # 🚫 1️⃣ Oldin yuborganmi — tekshiramiz
+    uid = cb.from_user.id
     if already_sent(uid):
-        await cb.message.answer("❌ Siz allaqachon konkursda qatnashgansiz.")
+        await cb.message.answer("❌ Siz allaqachon yuborgansiz.")
         await state.finish()
         await cb.answer()
         return
 
     data = await state.get_data()
+    username = f"@{cb.from_user.username}" if cb.from_user.username else cb.from_user.full_name
 
-    username = (
-        f"@{user.username}"
-        if user.username
-        else user.full_name
-    )
-
-    # 2️⃣ DB ga saqlash
     cur.execute(
-        "INSERT INTO submissions (user_id, username, team, photo_file_id) VALUES (?,?,?,?)",
-        (uid, username, data["team"], data["photo_file_id"])
+        "INSERT INTO submissions VALUES (?,?,?,?)",
+        (uid, username, data["team"], data["photo"])
     )
     conn.commit()
 
-    # 3️⃣ Ishtirokchi raqami
-    counter = cfg.get("submission_counter", 1)
-    cfg["submission_counter"] = counter + 1
-    save_config()
-
-    # 4️⃣ Caption (ADMIN + USER uchun bir xil)
     caption = (
-        f"🕴 {counter}_Ishtirokchimiz {username}\n"
-        f"🏆 Jamoa nomi : {data['team']}\n\n"
-        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-        f"👇👇👇\n"
-        f"https://t.me/dream_league_Uzb"
+        f"🏆 Ishtirokchi: {username}\n"
+        f"📌 Jamoa: {data['team']}\n\n"
+        "✅ BIZDAN UZOQLASHMANG ♻️\n"
+        "👇👇👇\n"
+        "https://t.me/dream_league_Uzb"
     )
 
-    # 5️⃣ Adminga yuborish
-    try:
-        await bot.send_photo(
-            ADMIN_ID,
-            data["photo_file_id"],
-            caption=caption
-        )
-    except Exception as e:
-        logging.error(f"❌ Adminga yuborib bo‘lmadi: {e}")
+    await bot.send_photo(ADMIN_ID, data["photo"], caption=caption)
+    await bot.send_photo(uid, data["photo"], caption=caption)
 
-    # 6️⃣ Foydalanuvchiga xabar
-    await cb.message.answer(
-        "✅ Maʼlumotlaringiz adminga yuborildi.\n"
-        "📸 Quyida yuborgan maʼlumotlaringiz:"
-    )
-
-    # 7️⃣ Foydalanuvchiga ham xuddi o‘sha post
-    await bot.send_photo(
-        uid,
-        data["photo_file_id"],
-        caption=caption
-    )
-
+    await cb.message.answer("✅ Ma’lumotlar yuborildi!")
     await state.finish()
     await cb.answer()
 
-
-
-# ================== ADMIN ==================
-@dp.message_handler(lambda m: is_admin(m.from_user.id) and m.text == "Reklamalarni sozlash")
-async def admin_promos(message: types.Message):
-    kb = InlineKeyboardMarkup()
-    for i, ch in enumerate(cfg.get("promo_channels", [])):
-        kb.add(InlineKeyboardButton(f"❌ {ch}", callback_data=f"delpromo:{i}")) # type: ignore
-    kb.add(InlineKeyboardButton("➕ Kanal qo‘shish", callback_data="addpromo")) # type: ignore
-    await message.answer("📢 Reklama kanallari:", reply_markup=kb)
-
-
-@dp.callback_query_handler(lambda c: c.data == "addpromo")
-async def addpromo(cb: types.CallbackQuery):
-    await cb.message.answer("➕ Kanal username yoki linkini kiriting:")
-    await AdminForm.waiting_promo.set()
-    await cb.answer()
-
-
-@dp.message_handler(state=AdminForm.waiting_promo)
-async def savepromo(message: types.Message, state: FSMContext):
-    cfg.setdefault("promo_channels", []).append(message.text.strip())
-    save_config()
-    await message.answer("✅ Kanal qo‘shildi")
-    await state.finish()
-
-
-@dp.callback_query_handler(lambda c: c.data.startswith("delpromo:"))
-async def delpromo(cb: types.CallbackQuery):
-    idx = int(cb.data.split(":")[1])
-    cfg["promo_channels"].pop(idx)
-    save_config()
-    await cb.message.answer("🗑 Kanal o‘chirildi")
-    await cb.answer()
-
-
-@dp.message_handler(lambda m: m.text == "🏆 TOP-100 postlar")
+# ================== TOP-100 ==================
+@dp.message_handler(lambda m: m.text and "TOP-100" in m.text)
 async def top_100(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -392,27 +204,19 @@ async def top_100(message: types.Message):
     rows = cur.fetchall()
 
     if not rows:
-        await message.answer("❌ Ma’lumot yo‘q. Avval reaksiyalarni yangilang.")
+        await message.answer("❌ Ma’lumot yo‘q.")
         return
 
-    text = "🏆 TOP-100 ENG KO‘P REAKSIYA OLGAN POSTLAR\n\n"
-
-    for i, (link, total, details) in enumerate(rows, start=1):
-        block = (
-            f"{i}. 📊 Jami: {total}\n"
-            f"{details}\n"
-            f"🔗 {link}\n\n"
-        )
-
+    text = "🏆 TOP-100 POSTLAR\n\n"
+    for i, (link, total, details) in enumerate(rows, 1):
+        block = f"{i}. 📊 {total}\n{details}\n{link}\n\n"
         if len(text) + len(block) > 3800:
-            await message.answer(text, disable_web_page_preview=True)
+            await message.answer(text)
             text = ""
-
         text += block
 
     if text:
-        await message.answer(text, disable_web_page_preview=True)
-
+        await message.answer(text)
 
 # ================== RUN ==================
 if __name__ == "__main__":
