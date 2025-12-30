@@ -2,7 +2,8 @@ import logging
 import json
 import os
 import sqlite3
-CHANNEL_ID = "@dream_league_Uzb"
+
+
 
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,7 +15,7 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 # ================== CONFIG ==================
 with open("config.json", "r", encoding="utf-8") as f:
     cfg = json.load(f)
-
+CHANNEL_ID = cfg.get("channel_id", "@dream_league_Uzb")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or cfg.get("bot_token")
 ADMIN_ID = int(cfg.get("admin_id"))
 
@@ -44,6 +45,16 @@ CREATE TABLE IF NOT EXISTS submissions (
     photo_file_id TEXT
 )
 """)
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS channel_posts (
+    post_id INTEGER PRIMARY KEY,
+    post_link TEXT,
+    total_reactions INTEGER DEFAULT 0,
+    reactions_text TEXT DEFAULT ''
+)
+""")
+conn.commit()
 
 
 def already_sent(user_id: int) -> bool:
