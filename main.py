@@ -265,12 +265,12 @@ async def confirm(cb: types.CallbackQuery, state: FSMContext):
     cfg["submission_counter"] = counter + 1
     save_config()
 
-        admin_caption = (
-        f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
-        f"📌 Jamoa nomi : {data['team']}\n\n"
-        f"✅ BIZDAN UZOQLASHMANG ♻️\n"
-        f"👇👇👇\n"
-        f"https://t.me/dream_league_Uzb"
+    admin_caption = (
+    f"🏆 {counter}_Ishtirokchimiz {data['username']}\n"
+    f"📌 Jamoa nomi : {data['team']}\n\n"
+    f"✅ BIZDAN UZOQLASHMANG ♻️\n"
+    f"👇👇👇\n"
+    f"https://t.me/dream_league_Uzb"
     )
 
     # Adminga yuborish
