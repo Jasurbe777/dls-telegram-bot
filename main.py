@@ -413,6 +413,7 @@ async def top_100(message: types.Message):
     if text:
         await message.answer(text, disable_web_page_preview=True)
 
+
 # ================== RUN ==================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
