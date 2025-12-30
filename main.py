@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS submissions (
 """)
 conn.commit()
 
+cur.execute("""
+ALTER TABLE channel_posts ADD COLUMN total_reactions INTEGER DEFAULT 0
+""")
+cur.execute("""
+ALTER TABLE channel_posts ADD COLUMN reactions_text TEXT DEFAULT ''
+""")
+conn.commit()
+
 def already_sent(user_id: int) -> bool:
     cur.execute("SELECT 1 FROM submissions WHERE user_id = ?", (user_id,))
     return cur.fetchone() is not None
@@ -105,6 +113,8 @@ async def start(message: types.Message, state: FSMContext):
         admin_kb.add("Reklamalarni sozlash")
         admin_kb.add("Sozlash (raqam kiritish)")
         admin_kb.add("📥 Postlarni DB ga yuklash")
+        admin_kb.add("📥 🔄 Reaksiyalarni yangilash")
+        admin_kb.add("🏆 TOP-100 postlar")
         await message.answer("🔧 Admin panel", reply_markup=admin_kb)
 
 
@@ -395,6 +405,79 @@ async def load_posts_to_db(message: types.Message):
         f"✅ Yakunlandi!\n\n"
         f"📦 DB ga yuklangan postlar soni: {added}"
     )
+
+@dp.message_handler(lambda m: m.text == "🔄 Reaksiyalarni yangilash")
+async def update_reactions(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer("⏳ Reaksiyalar yangilanmoqda...")
+
+    cur.execute("SELECT post_id FROM channel_posts")
+    posts = cur.fetchall()
+
+    updated = 0
+
+    for (post_id,) in posts:
+        try:
+            msg = await bot.get_message(CHANNEL_ID, post_id)
+            if not msg or not msg.reactions:
+                continue
+
+            total = 0
+            parts = []
+
+            for r in msg.reactions:
+                total += r.count
+                parts.append(f"{r.emoji} {r.count}")
+
+            cur.execute(
+                "UPDATE channel_posts SET total_reactions=?, reactions_text=? WHERE post_id=?",
+                (total, " ".join(parts), post_id)
+            )
+            updated += 1
+
+        except Exception:
+            continue
+
+    conn.commit()
+    await message.answer(f"✅ Yangilandi: {updated} ta post")
+
+@dp.message_handler(lambda m: m.text == "🏆 TOP-100 postlar")
+async def top_100(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    cur.execute("""
+        SELECT post_link, total_reactions, reactions_text
+        FROM channel_posts
+        WHERE total_reactions > 0
+        ORDER BY total_reactions DESC
+        LIMIT 100
+    """)
+    rows = cur.fetchall()
+
+    if not rows:
+        await message.answer("❌ Ma’lumot yo‘q. Avval reaksiyalarni yangilang.")
+        return
+
+    text = "🏆 TOP-100 ENG KO‘P REAKSIYA OLGAN POSTLAR\n\n"
+
+    for i, (link, total, details) in enumerate(rows, start=1):
+        block = (
+            f"{i}. 📊 Jami: {total}\n"
+            f"{details}\n"
+            f"🔗 {link}\n\n"
+        )
+
+        if len(text) + len(block) > 3800:
+            await message.answer(text, disable_web_page_preview=True)
+            text = ""
+
+        text += block
+
+    if text:
+        await message.answer(text, disable_web_page_preview=True)
 
 # ================== RUN ==================
 if __name__ == "__main__":
