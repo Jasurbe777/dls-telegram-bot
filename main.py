@@ -44,15 +44,7 @@ CREATE TABLE IF NOT EXISTS submissions (
     photo_file_id TEXT
 )
 """)
-conn.commit()
 
-cur.execute("""
-ALTER TABLE channel_posts ADD COLUMN total_reactions INTEGER DEFAULT 0
-""")
-cur.execute("""
-ALTER TABLE channel_posts ADD COLUMN reactions_text TEXT DEFAULT ''
-""")
-conn.commit()
 
 def already_sent(user_id: int) -> bool:
     cur.execute("SELECT 1 FROM submissions WHERE user_id = ?", (user_id,))
@@ -373,50 +365,6 @@ async def delpromo(cb: types.CallbackQuery):
     await cb.message.answer("🗑 Kanal o‘chirildi")
     await cb.answer()
 
-
-
-@dp.message_handler(lambda m: m.text == "🔄 Reaksiyalarni yangilash")
-async def update_reactions(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    await message.answer("⏳ Reaksiyalar yangilanmoqda...")
-
-    cur.execute("SELECT post_id FROM channel_posts")
-    posts = cur.fetchall()
-
-    updated = 0
-
-    for (post_id,) in posts:
-        try:
-            msg = await bot.get_message(CHANNEL_ID, post_id)
-            if not msg or not msg.reactions:
-                continue
-
-            total = 0
-            details = []
-
-            for r in msg.reactions:
-                total += r.count
-                details.append(f"{r.emoji} {r.count}")
-
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO post_reactions
-                (post_id, total, details)
-                VALUES (?, ?, ?)
-                """,
-                (post_id, total, " ".join(details))
-            )
-
-            updated += 1
-
-        except Exception:
-            continue
-
-    conn.commit()
-
-    await message.answer(f"✅ Yangilandi: {updated} ta post")
 
 @dp.message_handler(lambda m: m.text == "🏆 TOP-100 postlar")
 async def top_100(message: types.Message):
