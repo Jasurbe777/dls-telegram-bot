@@ -330,6 +330,9 @@ async def delpromo(cb: types.CallbackQuery):
     await cb.message.answer("🗑 Kanal o‘chirildi")
     await cb.answer()
 
+@dp.message_handler(lambda m: m.text)
+async def debug_all_text(message: types.Message):
+    print("TEXT KELDI >>>", repr(message.text))
 
 # ================== RUN ==================
 if __name__ == "__main__":
@@ -339,6 +342,8 @@ if __name__ == "__main__":
 async def top_100(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
+
+    await message.answer("⏳ TOP-100 hisoblanmoqda...")
 
     cur.execute("""
         SELECT post_link, total_reactions, reactions_text
@@ -370,3 +375,4 @@ async def top_100(message: types.Message):
 
     if text:
         await message.answer(text, disable_web_page_preview=True)
+
