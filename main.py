@@ -343,8 +343,6 @@ async def top_100(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    await message.answer("⏳ TOP-100 hisoblanmoqda...")
-
     cur.execute("""
         SELECT post_link, total_reactions, reactions_text
         FROM channel_posts
@@ -375,4 +373,3 @@ async def top_100(message: types.Message):
 
     if text:
         await message.answer(text, disable_web_page_preview=True)
-
