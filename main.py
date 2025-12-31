@@ -84,10 +84,11 @@ async def start(message: types.Message):
     await message.answer(text, reply_markup=kb)
 
     if is_admin(message.from_user.id):
-        admin_kb = types.ReplyKeyboardMarkup(resize_keyboard=True) # type: ignore
+        admin_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        admin_kb.add("🏆 TOP-100 postlar")
         admin_kb.add("Reklamalarni sozlash")
         admin_kb.add("Sozlash (raqam kiritish)")
-        await message.answer("🔧 Admin panel", reply_markup=admin_kb)
+    await message.answer("🔧 Admin panel", reply_markup=admin_kb)
 
 
 # ================== START FLOW ==================
@@ -333,3 +334,43 @@ async def delpromo(cb: types.CallbackQuery):
 # ================== RUN ==================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
+
+@dp.message_handler(lambda m: m.text == "🏆 TOP-100 postlar")
+async def top_100_posts(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    cur.execute("""
+        SELECT post_link, total_reactions, reactions_text
+        FROM channel_posts
+        WHERE total_reactions > 0
+        ORDER BY total_reactions DESC
+        LIMIT 100
+    """)
+    rows = cur.fetchall()
+
+    if not rows:
+        await message.answer(
+            "❌ Ma’lumot yo‘q.\n\n"
+            "Avval reaksiyalarni yangilang."
+        )
+        return
+
+    text = "🏆 TOP-100 ENG KO‘P REAKSIYA OLGAN POSTLAR\n\n"
+
+    for i, (link, total, details) in enumerate(rows, start=1):
+        block = (
+            f"{i}. 📊 Jami: {total}\n"
+            f"{details}\n"
+            f"🔗 {link}\n\n"
+        )
+
+        # Telegram limitdan oshmasligi uchun
+        if len(text) + len(block) > 3800:
+            await message.answer(text, disable_web_page_preview=True)
+            text = ""
+
+        text += block
+
+    if text:
+        await message.answer(text, disable_web_page_preview=True)
