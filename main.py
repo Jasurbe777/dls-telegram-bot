@@ -335,8 +335,8 @@ async def delpromo(cb: types.CallbackQuery):
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
 
-@dp.message_handler(lambda m: m.text == "🏆 TOP-100 postlar")
-async def top_100_posts(message: types.Message):
+@dp.message_handler(lambda m: m.text and "TOP-100" in m.text)
+async def top_100(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -350,10 +350,7 @@ async def top_100_posts(message: types.Message):
     rows = cur.fetchall()
 
     if not rows:
-        await message.answer(
-            "❌ Ma’lumot yo‘q.\n\n"
-            "Avval reaksiyalarni yangilang."
-        )
+        await message.answer("❌ Ma’lumot yo‘q. Avval reaksiyalarni yangilang.")
         return
 
     text = "🏆 TOP-100 ENG KO‘P REAKSIYA OLGAN POSTLAR\n\n"
@@ -365,7 +362,6 @@ async def top_100_posts(message: types.Message):
             f"🔗 {link}\n\n"
         )
 
-        # Telegram limitdan oshmasligi uchun
         if len(text) + len(block) > 3800:
             await message.answer(text, disable_web_page_preview=True)
             text = ""
